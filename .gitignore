@@ -2,3 +2,4 @@
 ArduinoSketch/decabot_serverClient/config.h
 
 __pycache__/
+.DS_Store
