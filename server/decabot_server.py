@@ -61,6 +61,29 @@ MORSE = {
 }
 
 
+# The LED matrix font is Latin only: Cyrillic is transliterated for the m command
+TRANSLIT = {
+    "А": "A", "Б": "B", "В": "V", "Г": "G", "Д": "D", "Е": "E", "Ё": "E", "Ж": "ZH", "З": "Z",
+    "И": "I", "Й": "Y", "К": "K", "Л": "L", "М": "M", "Н": "N", "О": "O", "П": "P", "Р": "R",
+    "С": "S", "Т": "T", "У": "U", "Ф": "F", "Х": "H", "Ц": "TS", "Ч": "CH", "Ш": "SH",
+    "Щ": "SCH", "Ъ": "", "Ы": "Y", "Ь": "", "Э": "E", "Ю": "YU", "Я": "YA",
+}
+MATRIX_MAX_CHARS = 40
+
+
+def matrix_text(text):
+    """Text for the LED matrix: Cyrillic transliterated, other non-ASCII dropped."""
+    out = []
+    for ch in str(text):
+        upper = ch.upper()
+        if upper in TRANSLIT:
+            latin = TRANSLIT[upper]
+            out.append(latin if ch.isupper() else latin.lower())
+        elif 32 <= ord(ch) < 127:
+            out.append(ch)
+    return " ".join("".join(out).split())[:MATRIX_MAX_CHARS]
+
+
 def encode_morse(text):
     """'КАК ДЕЛА' -> '-.- .- -.-/-.. . .-.. .-'  (space between letters, / between words).
 
@@ -341,10 +364,26 @@ class Handler(BaseHTTPRequestHandler):
             pattern = encode_morse(text)
             if not pattern:
                 return self.send(400, {"error": "nothing to send: no Morse-encodable characters"})
-            command = f"w{robot.settings['morse_hz']},{robot.settings['morse_unit']},{pattern}"
-            robot.enqueue([command])
-            log(f"{robot_id}: say {text!r} -> {pattern}")
-            return self.send(200, {"text": text, "pattern": pattern, "pending": len(robot.queue)})
+            commands = []
+            shown = matrix_text(text) if data.get("show", True) else ""
+            if shown:
+                commands.append("m" + shown)       # scroll the text while the Morse plays
+            commands.append(f"w{robot.settings['morse_hz']},{robot.settings['morse_unit']},{pattern}")
+            robot.enqueue(commands)
+            log(f"{robot_id}: say {text!r} -> {pattern}" + (f" / matrix {shown!r}" if shown else ""))
+            return self.send(200, {"text": text, "pattern": pattern, "matrix": shown, "pending": len(robot.queue)})
+        if action == "show":
+            try:
+                data = json.loads(self.read_body() or b"{}")
+                text = str(data.get("text", "")) if isinstance(data, dict) else ""
+            except ValueError:
+                return self.send(400, {"error": "bad json"})
+            shown = matrix_text(text)
+            if not shown:
+                return self.send(400, {"error": "nothing to show: only Latin letters, digits and punctuation fit the matrix"})
+            robot.enqueue(["m" + shown])
+            log(f"{robot_id}: show {shown!r}")
+            return self.send(200, {"text": text, "matrix": shown, "pending": len(robot.queue)})
         if action == "settings":
             try:
                 data = json.loads(self.read_body() or b"{}")
@@ -483,6 +522,7 @@ function render(robots){
         <div class="morse">
           <div class="row phrases">${PHRASES.map(p => `<button data-say="${p}">${p}</button>`).join('')}</div>
           <div class="row"><input class="say-text" placeholder="any text in Morse (RU / EN)"><button class="say">Say</button></div>
+          <div class="row"><input class="show-text" placeholder="text for the LED matrix"><button class="show">Show</button></div>
           <div class="small pattern"></div>
         </div>
         <label><input type="checkbox" class="auto"> Autopilot (server drives a square)</label>
@@ -528,8 +568,16 @@ function render(robots){
       card.querySelector('.clear').onclick = () => api(`/api/robots/${r.id}/clear`,{});
       const say = async text => {
         const res = await api(`/api/robots/${r.id}/say`, {text});
-        card.querySelector('.pattern').textContent = res.pattern ? `${text}: ${res.pattern}` : (res.error || '');
+        card.querySelector('.pattern').textContent = res.pattern ? `${text}: ${res.pattern}` + (res.matrix ? ` | matrix: ${res.matrix}` : '') : (res.error || '');
       };
+      const show = async text => {
+        const res = await api(`/api/robots/${r.id}/show`, {text});
+        card.querySelector('.pattern').textContent = res.matrix ? `matrix: ${res.matrix}` : (res.error || '');
+      };
+      const showInput = card.querySelector('.show-text');
+      const showSend = () => { if(showInput.value.trim()){ show(showInput.value.trim()); showInput.value=''; } };
+      card.querySelector('.show').onclick = showSend;
+      showInput.onkeydown = e => { if(e.key==='Enter') showSend(); };
       for(const b of card.querySelectorAll('[data-say]')) b.onclick = () => say(b.dataset.say);
       const sayInput = card.querySelector('.say-text');
       const saySend = () => { if(sayInput.value.trim()){ say(sayInput.value.trim()); sayInput.value=''; } };

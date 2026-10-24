@@ -141,13 +141,33 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(srv.encode_morse("ёж  1"), ". ...-/.----")
         self.assertEqual(srv.encode_morse("@#$"), "")
 
+    def test_matrix_text_transliterates_cyrillic(self):
+        self.assertEqual(srv.matrix_text("ПРИВЕТ"), "PRIVET")
+        self.assertEqual(srv.matrix_text("Как дела?"), "Kak dela?")
+        self.assertEqual(srv.matrix_text("Ёж и щука"), "Ezh i schuka")
+        self.assertEqual(srv.matrix_text("  hi   there "), "hi there")
+        self.assertEqual(srv.matrix_text("日本"), "")
+        self.assertEqual(len(srv.matrix_text("x" * 100)), srv.MATRIX_MAX_CHARS)
+
+    def test_show_queues_matrix_text(self):
+        status, body = self.call("POST", "/api/robots/AB12/show", {"text": "Пока!"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["matrix"], "Poka!")
+        _, body = self.sync()
+        self.assertEqual(body, "mPoka!\n")
+        status, _ = self.call("POST", "/api/robots/AB12/show", {"text": "日本"})
+        self.assertEqual(status, 400)
+
     def test_say_queues_a_morse_command_with_the_robot_settings(self):
         self.call("POST", "/api/robots/AB12/settings", {"morse_hz": 1000, "morse_unit": 60})
         status, body = self.call("POST", "/api/robots/AB12/say", {"text": "Пока"})
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["pattern"], ".--. --- -.- .-")
         _, body = self.sync()
-        self.assertEqual(body, "w1000,60,.--. --- -.- .-\n")
+        self.assertEqual(body, "mPoka\nw1000,60,.--. --- -.- .-\n")   # matrix text, then Morse
+        self.call("POST", "/api/robots/AB12/say", {"text": "ok", "show": False})
+        _, body = self.sync()
+        self.assertEqual(body, "w1000,60,--- -.-\n")
         status, _ = self.call("POST", "/api/robots/AB12/say", {"text": "***"})
         self.assertEqual(status, 400)
         status, body = self.call("GET", "/api/phrases")

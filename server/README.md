@@ -51,7 +51,8 @@ side needs no extra libraries and the server can be rewritten in any language.
    *Morse tone* and *Morse dot* the sound of Morse messages. Move the sliders
    and press *Upload* to apply. The values are kept on the server per robot,
    so every browser sees the same ones. The ПРИВЕТ / ПОКА / КАК ДЕЛА buttons
-   and the text box next to them play the text in Morse on the speaker.
+   and the text box next to them play the text in Morse on the speaker while
+   it scrolls across the LED matrix; the *Show* box sends text to the matrix only.
 
 While the robot cannot reach the server, the LED matrix alternates the Wi-Fi
 logo with the robot name; the eyes appear once the first answer arrives.
@@ -155,7 +156,8 @@ duration keep running until the next movement command or `p`.
 | `POST /api/robots/<name>/clear` | | drops the pending queue |
 | `POST /api/robots/<name>/auto` | `{"enabled": true}` | toggles the autopilot demo |
 | `POST /api/robots/<name>/settings` | `{"straight": 80, "turn": 60, "ramp": 2000, "morse_hz": 880, "morse_unit": 80}` | per-robot settings, any subset: D-pad power (0..100) for straight moves and turns, acceleration time in ms (0..10000, pushed to the robot as `g<ms>`), Morse tone (100..4000 Hz) and dot length (30..300 ms). Returned in `GET /api/robots` |
-| `POST /api/robots/<name>/say` | `{"text": "КАК ДЕЛА"}` | encodes the text in Morse (Russian and Latin letters, digits) and queues it for the speaker; answers with the pattern |
+| `POST /api/robots/<name>/say` | `{"text": "КАК ДЕЛА"}` | encodes the text in Morse (Russian and Latin letters, digits) and queues it for the speaker, scrolling the text on the LED matrix at the same time (`"show": false` to keep the matrix quiet); answers with the pattern |
+| `POST /api/robots/<name>/show` | `{"text": "Привет"}` | scrolls the text on the LED matrix. The matrix font is Latin only, so Cyrillic is transliterated (`Privet`) and other non-ASCII characters are dropped; up to 40 characters |
 | `GET /api/phrases` | | the quick phrases shown as buttons (`MORSE_PHRASES` in the server) |
 | `POST /api/robots/<name>/sync` | telemetry JSON (used by the robot) | commands as text |
 
