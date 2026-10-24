@@ -103,6 +103,21 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("openDecabot server", body)
 
+    def test_settings_are_stored_clamped_and_validated(self):
+        _, body = self.call("GET", "/api/robots")
+        self.sync()
+        _, body = self.call("GET", "/api/robots/AB12")
+        self.assertEqual(json.loads(body)["settings"], {"straight": 100, "turn": 100})
+        status, body = self.call("POST", "/api/robots/AB12/settings", {"straight": 60, "turn": 140})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["settings"], {"straight": 60, "turn": 100})
+        status, body = self.call("POST", "/api/robots/AB12/settings", {"turn": 35})
+        self.assertEqual(json.loads(body)["settings"], {"straight": 60, "turn": 35})
+        status, _ = self.call("POST", "/api/robots/AB12/settings", {"turn": "fast"})
+        self.assertEqual(status, 400)
+        _, body = self.call("GET", "/api/robots/AB12")
+        self.assertEqual(json.loads(body)["settings"], {"straight": 60, "turn": 35})
+
     def test_clear_drops_queue(self):
         self.call("POST", "/api/robots/AB12/commands", {"commands": ["f100", "f100"]})
         _, body = self.call("POST", "/api/robots/AB12/clear", {})

@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 
 MAX_QUEUE = 50          # commands waiting per robot
 OFFLINE_AFTER = 3.0     # seconds without sync -> robot shown offline
+DEFAULT_SETTINGS = {"straight": 100, "turn": 100}   # D-pad power 0..100, per robot
 
 # Autopilot demo: (command, seconds before the next step). Drives a square.
 AUTO_PATTERN = [("f60,900", 1.3), ("d60,450", 0.9)]
@@ -91,6 +92,17 @@ class Robot:
         self.auto_step = 0
         self.auto_next = 0.0
         self.low_battery = False
+        self.settings = dict(DEFAULT_SETTINGS)
+
+    def update_settings(self, data):
+        """Accepts {"straight": 0..100, "turn": 0..100}; unknown keys are ignored."""
+        for key in DEFAULT_SETTINGS:
+            if key in data:
+                value = data[key]
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError(key)
+                self.settings[key] = max(0, min(100, int(value)))
+        return self.settings
 
     def enqueue(self, commands):
         added = 0
@@ -120,6 +132,7 @@ class Robot:
             "queued": list(self.queue),
             "sent": list(self.sent),
             "auto": self.auto,
+            "settings": self.settings,
             "telemetry": self.telemetry,
         }
 
@@ -263,6 +276,16 @@ class Handler(BaseHTTPRequestHandler):
             self.read_body()
             dropped = len(robot.drain())
             return self.send(200, {"dropped": dropped})
+        if action == "settings":
+            try:
+                data = json.loads(self.read_body() or b"{}")
+                if not isinstance(data, dict):
+                    raise ValueError
+                settings = robot.update_settings(data)
+            except (ValueError, TypeError):
+                return self.send(400, {"error": "settings must be numbers 0..100"})
+            log(f"{robot_id}: settings {settings}")
+            return self.send(200, {"settings": settings})
         self.read_body()
         self.send(404, {"error": "not found"})
 
@@ -330,6 +353,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .row button{padding:8px 12px;font-size:14px}
   .small{font-size:12px;color:var(--muted);margin-top:8px;word-break:break-all;font-family:monospace}
   label{font-size:14px;display:flex;align-items:center;gap:6px;margin-top:8px}
+  .speeds{border-top:1px solid var(--border);margin-top:10px;padding-top:8px}
+  .speeds .line{display:grid;grid-template-columns:92px 1fr 44px;align-items:center;gap:8px;font-size:13px;color:var(--muted);margin:4px 0}
+  .speeds input[type=range]{width:100%;accent-color:#1f5fa8}
+  .speeds .val{text-align:right;font-family:monospace;color:var(--txt)}
+  .speeds .upload{width:100%;margin-top:6px;padding:8px;font-size:14px}
+  .speeds .upload.dirty{background:#1f5fa8}
+  .speeds .upload:disabled{opacity:.5;cursor:default}
   .empty{color:var(--muted)}
 </style>
 </head>
@@ -337,15 +367,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <h1>openDecabot server</h1>
 <div id="cards" class="cards"><p class="empty">Waiting for robots... Upload decabot_serverClient with this computer's IP in config.h.</p></div>
 <script>
-const speed = 100;
 async function api(path, body){
   const r = await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   return r.json();
 }
 function cmd(id, c){ return api(`/api/robots/${id}/commands`,{commands:[c]}); }
 function hold(btn, id, c){
-  const down = e => { e.preventDefault(); cmd(id,c); };
-  const up = e => { e.preventDefault(); cmd(id,'p'); };
+  // c is a function so the power is read from the uploaded settings at press time
+  let pressed = false;
+  const down = e => { e.preventDefault(); pressed = true; cmd(id, c()); };
+  const up = e => { e.preventDefault(); if(pressed){ pressed = false; cmd(id,'p'); } };
   btn.onpointerdown = down; btn.onpointerup = up; btn.onpointerleave = up; btn.onpointercancel = up;
 }
 function row(k,v){ return `<tr><td>${k}</td><td>${v}</td></tr>`; }
@@ -369,13 +400,38 @@ function render(robots){
         <div class="row"><input placeholder="raw command, e.g. f60,800 or mHELLO"><button class="send">Send</button></div>
         <div class="row"><button class="beep">Beep</button><button class="hello">Say hi</button><button class="eyes">Eyes</button><button class="clear">Clear queue</button></div>
         <label><input type="checkbox" class="auto"> Autopilot (server drives a square)</label>
+        <div class="speeds">
+          <div class="line"><span>Straight speed</span><input type="range" class="straight" min="0" max="100" step="5"><span class="val straight-val"></span></div>
+          <div class="line"><span>Turn speed</span><input type="range" class="turn" min="0" max="100" step="5"><span class="val turn-val"></span></div>
+          <button class="upload" disabled>Upload</button>
+        </div>
         <div class="small sent"></div>`;
       if(root.querySelector('.empty')) root.innerHTML='';
       root.appendChild(card);
-      hold(card.querySelector('.f'), r.id, 'f'+speed);
-      hold(card.querySelector('.t'), r.id, 't'+Math.round(speed/2));
-      hold(card.querySelector('.e'), r.id, 'e'+speed);
-      hold(card.querySelector('.d'), r.id, 'd'+speed);
+      card.settings = {...r.settings};
+      hold(card.querySelector('.f'), r.id, () => 'f'+card.settings.straight);
+      hold(card.querySelector('.t'), r.id, () => 't'+card.settings.straight);
+      hold(card.querySelector('.e'), r.id, () => 'e'+card.settings.turn);
+      hold(card.querySelector('.d'), r.id, () => 'd'+card.settings.turn);
+      const sliders = {straight: card.querySelector('.straight'), turn: card.querySelector('.turn')};
+      const upload = card.querySelector('.upload');
+      const showSliders = () => {
+        for(const k in sliders){ sliders[k].value = card.settings[k]; card.querySelector('.'+k+'-val').textContent = card.settings[k]; }
+        upload.disabled = true; upload.classList.remove('dirty'); upload.textContent = 'Upload';
+      };
+      const onSlide = () => {
+        for(const k in sliders) card.querySelector('.'+k+'-val').textContent = sliders[k].value;
+        const dirty = Object.keys(sliders).some(k => +sliders[k].value !== card.settings[k]);
+        upload.disabled = !dirty; upload.classList.toggle('dirty', dirty); upload.textContent = 'Upload';
+      };
+      for(const k in sliders) sliders[k].oninput = onSlide;
+      upload.onclick = async () => {
+        const body = {straight: +sliders.straight.value, turn: +sliders.turn.value};
+        const res = await api(`/api/robots/${r.id}/settings`, body);
+        if(res.settings){ card.settings = res.settings; showSliders(); upload.textContent = 'Uploaded'; }
+      };
+      card.showSliders = showSliders;
+      showSliders();
       card.querySelector('.p').onclick = () => cmd(r.id,'p');
       const input = card.querySelector('input[placeholder]');
       const send = () => { if(input.value.trim()){ cmd(r.id, input.value.trim()); input.value=''; } };
@@ -400,6 +456,10 @@ function render(robots){
       row('last command', t.lastCommand || '-') +
       row('firmware', t.fw ?? '-');
     if(document.activeElement !== card.querySelector('.auto')) card.querySelector('.auto').checked = r.auto;
+    // settings changed from another browser: refresh sliders unless this one has unsaved edits
+    if(JSON.stringify(r.settings) !== JSON.stringify(card.settings) && card.querySelector('.upload').disabled){
+      card.settings = {...r.settings}; card.showSliders();
+    }
     card.querySelector('.sent').textContent = 'sent: ' + (r.sent.slice(-8).join(' ') || '-') + (r.queued.length ? ' | queued: ' + r.queued.join(' ') : '');
   }
   for(const card of [...root.querySelectorAll('.card')]) if(!have.has(card.id.slice(2))) card.remove();

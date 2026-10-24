@@ -45,7 +45,10 @@ side needs no extra libraries and the server can be rewritten in any language.
 3. **Drive it.** Open `http://192.168.1.100:8000` in a browser. Each robot that
    contacts the server gets a card with its telemetry, a D-pad (hold to move,
    release to stop), a raw command box and an *Autopilot* switch that makes
-   the server drive the robot in a square.
+   the server drive the robot in a square. The *Straight speed* and *Turn
+   speed* sliders set the power the D-pad uses; move them and press *Upload*
+   to apply. The values are kept on the server per robot, so every browser
+   sees the same ones.
 
 While the robot cannot reach the server, the LED matrix alternates the Wi-Fi
 logo with the robot name; the eyes appear once the first answer arrives.
@@ -140,6 +143,7 @@ duration keep running until the next movement command or `p`.
 | `POST /api/robots/<name>/commands` | `{"commands": ["f100", "p"]}` or plain text, one command per line | `{"queued": 2, "pending": 2}` |
 | `POST /api/robots/<name>/clear` | | drops the pending queue |
 | `POST /api/robots/<name>/auto` | `{"enabled": true}` | toggles the autopilot demo |
+| `POST /api/robots/<name>/settings` | `{"straight": 80, "turn": 60}` | D-pad power (0..100) for straight moves and turns; stored per robot, returned in `GET /api/robots` |
 | `POST /api/robots/<name>/sync` | telemetry JSON (used by the robot) | commands as text |
 
 Queued commands are delivered on the robot's next sync, so with the default
