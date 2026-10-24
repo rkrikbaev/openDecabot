@@ -160,6 +160,7 @@ duration keep running until the next movement command or `p`.
 | `POST /api/robots/<name>/show` | `{"text": "Привет"}` | scrolls the text on the LED matrix. The matrix font is Latin only, so Cyrillic is transliterated (`Privet`) and other non-ASCII characters are dropped; up to 40 characters |
 | `GET /api/phrases` | | the quick phrases shown as buttons (`MORSE_PHRASES` in the server) |
 | `POST /api/robots/<name>/sync` | telemetry JSON (used by the robot) | commands as text |
+| `POST /api/robots/<name>/camera` | `{"stream": url, "snapshot": url, "led": url, ...}` (sent by the ESP32-CAM every 10 s) | attaches the camera to the robot; it appears as `camera` in `GET /api/robots` |
 
 Queued commands are delivered on the robot's next sync, so with the default
 interval a button press reaches the wheels within about 200 ms.
@@ -168,6 +169,37 @@ Example from a terminal:
 
 ```bash
 curl -X POST http://192.168.1.100:8000/api/robots/AB12/commands -d $'f80,1000\nn880,100'
+```
+
+## Camera (ESP32-CAM)
+
+An ESP32-CAM AI-Thinker module mounted in place of the LED matrix gives the
+robot eyes. It is a separate board with its own Wi-Fi: the robot firmware
+does not change apart from `HAS_MATRIX false` in its `config.h`.
+
+1. Flash `ArduinoSketch/decabot_camera` (board *AI Thinker ESP32-CAM*, esp32
+   core 3.x). Copy `config.example.h` to `config.h` with the Wi-Fi, the server
+   address and `ROBOT_NAME`, the 4 letters of the robot it sits on. The board
+   has no USB: use an ESP32-CAM-MB base board or a USB-TTL adapter.
+2. Wire 5V and GND from the Decabot Mini Shield to the camera's 5V/GND. A
+   470-1000 uF capacitor next to the camera prevents brown-out resets when
+   Wi-Fi and the sensor start together.
+3. The camera announces itself to the server every 10 s. The robot card on
+   the dashboard then shows a picture: snapshots every 5 s by default,
+   *Live* switches to the MJPEG stream (the camera serves one viewer at a
+   time), *Flash* toggles the white LED.
+
+Camera URLs: `/capture` one JPEG, `/stream` MJPEG, `/led?on=1`, `/status`.
+
+`server/vision_example.py` is the server-side "eyes": it fetches snapshots,
+finds the biggest blob of a colour with OpenCV and drives the robot towards
+it through the command API (timed moves, so the robot stops if the script
+dies). Needs `pip install opencv-python-headless numpy`:
+
+```bash
+python3 server/vision_example.py --robot 51F2 --color red --dry-run   # look only
+python3 server/vision_example.py --robot 51F2 --color red             # drive
+python3 server/vision_example.py --self-test                          # no camera needed
 ```
 
 ## Writing your own logic

@@ -173,6 +173,24 @@ class ServerTest(unittest.TestCase):
         status, body = self.call("GET", "/api/phrases")
         self.assertEqual(json.loads(body), srv.MORSE_PHRASES)
 
+    def test_camera_announce_is_attached_to_the_robot(self):
+        self.sync()
+        _, body = self.call("GET", "/api/robots/AB12")
+        self.assertIsNone(json.loads(body)["camera"])
+        announce = {"robot": "AB12", "stream": "http://192.168.0.120/stream",
+                    "snapshot": "http://192.168.0.120/capture", "led": "http://192.168.0.120/led", "rssi": -60}
+        status, body = self.call("POST", "/api/robots/AB12/camera", announce)
+        self.assertEqual(status, 200)
+        _, body = self.call("GET", "/api/robots/AB12")
+        cam = json.loads(body)["camera"]
+        self.assertEqual(cam["stream"], "http://192.168.0.120/stream")
+        self.assertTrue(cam["online"])
+        status, _ = self.call("POST", "/api/robots/AB12/camera", {"foo": "bar"})
+        self.assertEqual(status, 400)
+        srv.TOKEN = "secret"
+        status, _ = self.call("POST", "/api/robots/AB12/camera", announce)
+        self.assertEqual(status, 401)
+
     def test_clear_drops_queue(self):
         self.call("POST", "/api/robots/AB12/commands", {"commands": ["f100", "f100"]})
         _, body = self.call("POST", "/api/robots/AB12/clear", {})

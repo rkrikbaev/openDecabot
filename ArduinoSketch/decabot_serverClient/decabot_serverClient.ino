@@ -79,6 +79,9 @@
 #ifndef MORSE_UNIT_MS
 #define MORSE_UNIT_MS 80
 #endif
+#ifndef HAS_MATRIX
+#define HAS_MATRIX true
+#endif
 #include "ramp.h"
 
 #define buzzer BUZZER_PIN
@@ -187,15 +190,19 @@ void setup() {
 
   // startup animation
   for (int i = 0; i < 4; i++) {
-    matrix.clear();
-    matrix.drawBitmap(0, 2, decabotLogo[i], 8, 5, LED_ON);
-    matrix.writeDisplay();
+    if (HAS_MATRIX) {
+      matrix.clear();
+      matrix.drawBitmap(0, 2, decabotLogo[i], 8, 5, LED_ON);
+      matrix.writeDisplay();
+    }
     tone(buzzer, decabotMusic[i][0], decabotMusic[i][1] * 200);
     delay(decabotMusic[i][1] * 200);
     noTone(buzzer);
   }
-  matrix.clear();
-  matrix.writeDisplay();
+  if (HAS_MATRIX) {
+    matrix.clear();
+    matrix.writeDisplay();
+  }
 
   // Wi-Fi as a station: connection happens in background, loop() watches it
   WiFi.mode(WIFI_STA);
@@ -286,6 +293,7 @@ String buildTelemetry() {
   json += "\"interval\":" + String(syncInterval) + ",";
   json += "\"ramp\":" + String(rampMs) + ",";
   json += "\"speaking\":" + String(morsePattern.length() > 0 ? "true" : "false") + ",";
+  json += "\"matrix\":" + String(HAS_MATRIX ? "true" : "false") + ",";
   json += "\"syncs\":" + String(syncCount) + ",";
   json += "\"errors\":" + String(syncErrors) + ",";
   json += "\"commands\":" + String(commandCount) + ",";
@@ -551,6 +559,7 @@ int readBatteryPercent() {
 /* ---------------------------------------------------------------- display */
 
 void updateDisplay() {
+  if (!HAS_MATRIX) return;   // no LED matrix (e.g. replaced by the ESP32-CAM)
   if (!wifiOk || !serverOk) {
     // waiting for network: Wi-Fi logo alternating with the robot name
     if (millis() - nameTimer >= 100) {

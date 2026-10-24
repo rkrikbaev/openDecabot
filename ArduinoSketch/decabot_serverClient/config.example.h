@@ -42,5 +42,10 @@
 #define MORSE_HZ         880
 #define MORSE_UNIT_MS    80
 
+/* LED matrix shield (WEMOS Matrix LED on D5/D7). Set false when the front
+ * of the robot carries something else, such as the ESP32-CAM camera module
+ * (see ArduinoSketch/decabot_camera).                                       */
+#define HAS_MATRIX       true
+
 /* Set true if the robot has the battery measurement circuit on A0 */
 #define SHOW_BATTERY     false

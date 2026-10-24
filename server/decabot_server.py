@@ -38,6 +38,7 @@ DEFAULT_SETTINGS = {"straight": 100, "turn": 100, "ramp": 2000, "morse_hz": 880,
 SETTING_LIMITS = {"straight": (0, 100), "turn": (0, 100), "ramp": (0, 10000),
                   "morse_hz": (100, 4000), "morse_unit": (30, 300)}
 RAMP_RESEND_SECONDS = 1.0   # how often to push a ramp the robot does not report yet
+CAMERA_OFFLINE_AFTER = 35.0 # seconds without an announce -> camera shown offline
 
 # Quick Morse phrases shown as buttons on the dashboard
 MORSE_PHRASES = ["ПРИВЕТ", "ПОКА", "КАК ДЕЛА"]
@@ -168,6 +169,8 @@ class Robot:
         self.low_battery = False
         self.settings = dict(DEFAULT_SETTINGS)
         self.ramp_sent_at = 0.0
+        self.camera = None          # last announce from the ESP32-CAM, see /camera
+        self.camera_seen = 0.0
 
     def update_settings(self, data):
         """Accepts a subset of DEFAULT_SETTINGS keys; values are clamped to their limits."""
@@ -199,6 +202,14 @@ class Robot:
     def online(self):
         return self.last_seen and time.time() - self.last_seen < OFFLINE_AFTER
 
+    def camera_info(self):
+        if not self.camera:
+            return None
+        info = dict(self.camera)
+        info["online"] = time.time() - self.camera_seen < CAMERA_OFFLINE_AFTER
+        info["ageSeconds"] = round(time.time() - self.camera_seen, 1)
+        return info
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -210,6 +221,7 @@ class Robot:
             "sent": list(self.sent),
             "auto": self.auto,
             "settings": self.settings,
+            "camera": self.camera_info(),
             "telemetry": self.telemetry,
         }
 
@@ -329,6 +341,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if action == "sync":
             return self.handle_sync(robot_id)
+        if action == "camera":
+            return self.handle_camera(robot_id)
 
         robot = REGISTRY.get(robot_id, create=True)
         if action == "commands":
@@ -397,6 +411,24 @@ class Handler(BaseHTTPRequestHandler):
         self.read_body()
         self.send(404, {"error": "not found"})
 
+    def handle_camera(self, robot_id):
+        """Announce from the ESP32-CAM: {"stream": url, "snapshot": url, ...}."""
+        raw = self.read_body()
+        if not self.authorized():
+            return self.send(401, {"error": "unauthorized"})
+        try:
+            data = json.loads(raw.decode("utf-8", "replace") or "{}")
+            if not isinstance(data, dict) or not str(data.get("stream", "")).startswith("http"):
+                raise ValueError
+        except ValueError:
+            return self.send(400, {"error": "camera announce needs at least a stream url"})
+        robot = REGISTRY.get(robot_id, create=True)
+        if robot.camera is None or robot.camera.get("stream") != data.get("stream"):
+            log(f"{robot_id}: camera at {data.get('stream')}")
+        robot.camera = data
+        robot.camera_seen = time.time()
+        return self.send(200, {"ok": True, "robot": robot_id})
+
     def handle_sync(self, robot_id):
         raw = self.read_body()
         if not self.authorized():
@@ -461,6 +493,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .row button{padding:8px 12px;font-size:14px}
   .small{font-size:12px;color:var(--muted);margin-top:8px;word-break:break-all;font-family:monospace}
   label{font-size:14px;display:flex;align-items:center;gap:6px;margin-top:8px}
+  .video{margin:8px 0 4px}
+  .video img{width:100%;border-radius:12px;background:#000;display:block;aspect-ratio:4/3;object-fit:contain}
+  .video .bar{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted);margin-top:4px}
+  .video .bar button{padding:5px 10px;font-size:12px}
   .morse{border-top:1px solid var(--border);margin-top:10px;padding-top:4px}
   .morse .phrases button{flex:1;padding:8px 6px;font-size:14px}
   .speeds{border-top:1px solid var(--border);margin-top:10px;padding-top:8px}
@@ -512,6 +548,7 @@ function render(robots){
       card = document.createElement('div'); card.className='card'; card.id='r-'+r.id;
       card.innerHTML = `
         <h2><span class="dot"></span>${r.id}</h2>
+        <div class="video" hidden><img alt="camera"><div class="bar"><button class="live">Live</button><button class="snap">Snapshot</button><button class="flash">Flash</button><span class="caminfo"></span></div></div>
         <table class="tele"></table>
         <div class="pad">
           <button class="f">&#9650;</button><button class="e">&#9664;</button><button class="p">&#9632;</button>
@@ -557,6 +594,23 @@ function render(robots){
       };
       card.showSliders = showSliders;
       showSliders();
+      // camera: snapshots by default, Live switches to the MJPEG stream (one viewer at a time)
+      const video = card.querySelector('.video'), img = video.querySelector('img');
+      card.live = false; card.flash = false;
+      const refresh = () => { if(card.camera && !card.live) img.src = card.camera.snapshot + '?t=' + Date.now(); };
+      video.querySelector('.live').onclick = e => {
+        card.live = !card.live;
+        e.target.textContent = card.live ? 'Stop' : 'Live';
+        img.src = card.live ? card.camera.stream : card.camera.snapshot + '?t=' + Date.now();
+      };
+      video.querySelector('.snap').onclick = () => { if(card.live) video.querySelector('.live').click(); else refresh(); };
+      video.querySelector('.flash').onclick = e => {
+        card.flash = !card.flash;
+        e.target.textContent = card.flash ? 'Flash off' : 'Flash';
+        fetch(card.camera.led + '?on=' + (card.flash ? 1 : 0), {mode:'no-cors'});
+      };
+      card.refreshCamera = refresh;
+      setInterval(() => { if(card.camera && !card.live && document.visibilityState === 'visible') refresh(); }, 5000);
       card.querySelector('.p').onclick = () => cmd(r.id,'p');
       const input = card.querySelector('input[placeholder]');
       const send = () => { if(input.value.trim()){ cmd(r.id, input.value.trim()); input.value=''; } };
@@ -586,6 +640,16 @@ function render(robots){
       card.querySelector('.auto').onchange = e => api(`/api/robots/${r.id}/auto`,{enabled:e.target.checked});
     }
     card.querySelector('.dot').className = 'dot' + (r.online ? ' on' : '');
+    const cam = r.camera, video = card.querySelector('.video');
+    if(cam && cam.stream){
+      const first = !card.camera;
+      card.camera = cam;
+      video.hidden = false;
+      video.querySelector('.caminfo').textContent = (cam.online ? 'camera online' : `camera offline (${cam.ageSeconds} s)`) + (cam.rssi != null ? ` · ${cam.rssi} dBm` : '');
+      if(first) card.refreshCamera();
+    } else { video.hidden = true; card.camera = null; }
+    const hasMatrix = r.telemetry?.matrix !== false;
+    card.querySelector('.show-text').parentElement.hidden = !hasMatrix;
     card.querySelector('.tele').innerHTML =
       row('status', r.online ? 'online' : `offline (${r.ageSeconds ?? '-'} s)`) +
       row('ip / rssi', `${t.ip ?? '-'} / ${t.rssi ?? '-'} dBm`) +
