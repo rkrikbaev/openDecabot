@@ -30,5 +30,17 @@
  * moving, the motors are stopped. Set to 0 to disable.                     */
 #define FAILSAFE_MS      2000
 
+/* Smooth acceleration: the power climbs from 0 to the commanded value in
+ * this many milliseconds. 0 disables it. The dashboard slider changes it
+ * at runtime with the command  g<ms>.                                      */
+#define RAMP_MS          2000
+
+/* Speaker (the buzzer on the Decabot Mini Shield) used for beeps and for
+ * Morse code messages sent from the dashboard. Tone and dot length are the
+ * defaults; the dashboard sliders override them per message.             */
+#define BUZZER_PIN       D8
+#define MORSE_HZ         880
+#define MORSE_UNIT_MS    80
+
 /* Set true if the robot has the battery measurement circuit on A0 */
 #define SHOW_BATTERY     false

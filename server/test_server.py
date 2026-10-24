@@ -104,19 +104,54 @@ class ServerTest(unittest.TestCase):
         self.assertIn("openDecabot server", body)
 
     def test_settings_are_stored_clamped_and_validated(self):
-        _, body = self.call("GET", "/api/robots")
-        self.sync()
+        self.sync(ramp=2000)
         _, body = self.call("GET", "/api/robots/AB12")
-        self.assertEqual(json.loads(body)["settings"], {"straight": 100, "turn": 100})
+        self.assertEqual(json.loads(body)["settings"], srv.DEFAULT_SETTINGS)
         status, body = self.call("POST", "/api/robots/AB12/settings", {"straight": 60, "turn": 140})
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body)["settings"], {"straight": 60, "turn": 100})
-        status, body = self.call("POST", "/api/robots/AB12/settings", {"turn": 35})
-        self.assertEqual(json.loads(body)["settings"], {"straight": 60, "turn": 35})
+        settings = json.loads(body)["settings"]
+        self.assertEqual((settings["straight"], settings["turn"]), (60, 100))
+        status, body = self.call("POST", "/api/robots/AB12/settings", {"turn": 35, "morse_unit": 5})
+        settings = json.loads(body)["settings"]
+        self.assertEqual((settings["straight"], settings["turn"], settings["morse_unit"]), (60, 35, 30))
         status, _ = self.call("POST", "/api/robots/AB12/settings", {"turn": "fast"})
         self.assertEqual(status, 400)
         _, body = self.call("GET", "/api/robots/AB12")
-        self.assertEqual(json.loads(body)["settings"], {"straight": 60, "turn": 35})
+        self.assertEqual(json.loads(body)["settings"]["turn"], 35)
+
+    def test_ramp_setting_is_pushed_until_the_robot_reports_it(self):
+        self.sync(ramp=2000)
+        _, body = self.sync(ramp=2000)
+        self.assertEqual(body, "")                       # already in sync
+        self.call("POST", "/api/robots/AB12/settings", {"ramp": 1000})
+        _, body = self.sync(ramp=2000)
+        self.assertEqual(body, "g1000\n")
+        _, body = self.sync(ramp=2000)                   # robot still reports old: not spammed within 1 s
+        self.assertEqual(body, "")
+        _, body = self.sync(ramp=1000)                   # robot applied it
+        self.assertEqual(body, "")
+        _, body = self.sync()                            # robot without ramp support: nothing sent
+        self.assertEqual(body, "")
+
+    def test_morse_encoding(self):
+        self.assertEqual(srv.encode_morse("ПРИВЕТ"), ".--. .-. .. .-- . -")
+        self.assertEqual(srv.encode_morse("ПОКА"), ".--. --- -.- .-")
+        self.assertEqual(srv.encode_morse("КАК ДЕЛА"), "-.- .- -.-/-.. . .-.. .-")
+        self.assertEqual(srv.encode_morse("sos"), "... --- ...")
+        self.assertEqual(srv.encode_morse("ёж  1"), ". ...-/.----")
+        self.assertEqual(srv.encode_morse("@#$"), "")
+
+    def test_say_queues_a_morse_command_with_the_robot_settings(self):
+        self.call("POST", "/api/robots/AB12/settings", {"morse_hz": 1000, "morse_unit": 60})
+        status, body = self.call("POST", "/api/robots/AB12/say", {"text": "Пока"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["pattern"], ".--. --- -.- .-")
+        _, body = self.sync()
+        self.assertEqual(body, "w1000,60,.--. --- -.- .-\n")
+        status, _ = self.call("POST", "/api/robots/AB12/say", {"text": "***"})
+        self.assertEqual(status, 400)
+        status, body = self.call("GET", "/api/phrases")
+        self.assertEqual(json.loads(body), srv.MORSE_PHRASES)
 
     def test_clear_drops_queue(self):
         self.call("POST", "/api/robots/AB12/commands", {"commands": ["f100", "f100"]})

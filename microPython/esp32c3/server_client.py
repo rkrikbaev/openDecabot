@@ -33,7 +33,10 @@ FAILSAFE_MS = 2000                          # stop motors when the server is sil
 
 PIN_SERVO_DIR = 6                           # see boot.py pinout
 PIN_SERVO_ESQ = 7
-PIN_BUZZER = 3
+PIN_BUZZER = 3                              # speaker
+RAMP_MS = 2000                              # 0 -> commanded power in this time, 0 = off
+MORSE_HZ = 880
+MORSE_UNIT_MS = 80
 
 # servo calibration: pulse width in microseconds for full backwards / stop / full forward
 SERVO_MIN_US, SERVO_ZERO_US, SERVO_MAX_US = 1000, 1500, 2000
@@ -50,8 +53,10 @@ class Motors:
     def __init__(self):
         self.dir = machine.PWM(machine.Pin(PIN_SERVO_DIR), freq=50)
         self.esq = machine.PWM(machine.Pin(PIN_SERVO_ESQ), freq=50)
-        self.power_dir = 0
-        self.power_esq = 0
+        self.power_dir = 0.0
+        self.power_esq = 0.0
+        self.target_dir = 0
+        self.target_esq = 0
         self.stop()
 
     @staticmethod
@@ -68,17 +73,50 @@ class Motors:
             us = SERVO_ZERO_US + (SERVO_ZERO_US - SERVO_MIN_US) * power // 100
         servo.duty_u16(self._us_to_duty(us))
 
-    def set(self, esq, dir_):
-        self.power_esq = max(-100, min(100, esq))
-        self.power_dir = max(-100, min(100, dir_))
-        self._write(self.esq, self.power_esq, False)
-        self._write(self.dir, self.power_dir, True)   # right servo is mirrored
+    def _apply(self):
+        self._write(self.esq, int(round(self.power_esq)), False)
+        self._write(self.dir, int(round(self.power_dir)), True)   # right servo is mirrored
+
+    def set(self, esq, dir_, ramp_ms=0):
+        """Commanded power. With ramp_ms > 0 the power climbs there gradually (see ramp.h)."""
+        self.target_esq = max(-100, min(100, esq))
+        self.target_dir = max(-100, min(100, dir_))
+        self.power_esq = self._start(self.power_esq, self.target_esq, ramp_ms)
+        self.power_dir = self._start(self.power_dir, self.target_dir, ramp_ms)
+        self._apply()
+
+    @staticmethod
+    def _start(current, target, ramp_ms):
+        if ramp_ms == 0 or target == 0:
+            return target                       # ramp off, or stop: immediate
+        if (target >= 0) != (current >= 0):
+            return 0                            # reversing: stop now, ramp from zero
+        if abs(target) < abs(current):
+            return target                       # slowing down: immediate
+        return current
+
+    def step(self, dt_ms, ramp_ms):
+        """Called periodically; moves the applied power towards the targets."""
+        changed = False
+        for name in ("esq", "dir"):
+            current = getattr(self, "power_" + name)
+            target = getattr(self, "target_" + name)
+            if current == target:
+                continue
+            delta = abs(target) * dt_ms / ramp_ms if ramp_ms else abs(target - current)
+            current = min(target, current + delta) if current < target else max(target, current - delta)
+            if abs(current - target) < 0.01:
+                current = target
+            setattr(self, "power_" + name, current)
+            changed = True
+        if changed:
+            self._apply()
 
     def stop(self):
         self.set(0, 0)
 
     def moving(self):
-        return self.power_esq != 0 or self.power_dir != 0
+        return self.power_esq != 0 or self.power_dir != 0 or self.target_esq != 0 or self.target_dir != 0
 
 
 class Robot:
@@ -87,6 +125,8 @@ class Robot:
         self.motors = Motors()
         self.buzzer = None
         self.interval = SYNC_INTERVAL_MS
+        self.ramp_ms = RAMP_MS
+        self.ramp_tick = time.ticks_ms()
         self.motion_end = None
         self.last_contact = None
         self.failsafe_done = False
@@ -104,14 +144,39 @@ class Robot:
 
     # -- hardware ------------------------------------------------------------
 
-    def beep(self, freq, ms):
-        try:
-            if self.buzzer is None:
-                self.buzzer = machine.PWM(machine.Pin(PIN_BUZZER))
+    def _tone(self, freq, on):
+        if self.buzzer is None:
+            self.buzzer = machine.PWM(machine.Pin(PIN_BUZZER))
+        if on:
             self.buzzer.freq(max(31, int(freq)))
             self.buzzer.duty_u16(32768)
-            time.sleep_ms(min(int(ms), 1000))
+        else:
             self.buzzer.duty_u16(0)
+
+    def beep(self, freq, ms):
+        try:
+            self._tone(freq, True)
+            time.sleep_ms(min(int(ms), 1000))
+            self._tone(freq, False)
+        except Exception as exc:
+            print("buzzer:", exc)
+
+    def morse(self, hz, unit, pattern):
+        """Plays a dot/dash pattern. Blocking: a short phrase takes 1-3 s."""
+        hz = hz or MORSE_HZ
+        unit = unit or MORSE_UNIT_MS
+        print("Morse:", pattern)
+        try:
+            for ch in pattern:
+                if ch in ".-":
+                    self._tone(hz, True)
+                    time.sleep_ms(unit if ch == "." else 3 * unit)
+                    self._tone(hz, False)
+                    time.sleep_ms(unit)
+                elif ch == " ":
+                    time.sleep_ms(2 * unit)
+                elif ch == "/":
+                    time.sleep_ms(6 * unit)
         except Exception as exc:
             print("buzzer:", exc)
 
@@ -143,9 +208,12 @@ class Robot:
             "rssi": self.wlan.status("rssi") if self.wlan.isconnected() else None,
             "heap": gc.mem_free(),
             "battery": None,
-            "motors": {"esq": self.motors.power_esq, "dir": self.motors.power_dir},
+            "motors": {"esq": int(round(self.motors.power_esq)), "dir": int(round(self.motors.power_dir))},
             "moving": self.motors.moving(),
+            "targets": {"esq": self.motors.target_esq, "dir": self.motors.target_dir},
             "interval": self.interval,
+            "ramp": self.ramp_ms,
+            "speaking": False,
             "syncs": self.syncs,
             "errors": self.errors,
             "commands": self.commands,
@@ -196,16 +264,16 @@ class Robot:
         print("Command", cmd, param, extra)
 
         if cmd == "f":
-            self.motors.set(value, value)
+            self.motors.set(value, value, self.ramp_ms)
             self.timed(duration)
         elif cmd == "t":
-            self.motors.set(-value, -value)
+            self.motors.set(-value, -value, self.ramp_ms)
             self.timed(duration)
         elif cmd == "d":
-            self.motors.set(value, -value)
+            self.motors.set(value, -value, self.ramp_ms)
             self.timed(duration)
         elif cmd == "e":
-            self.motors.set(-value, value)
+            self.motors.set(-value, value, self.ramp_ms)
             self.timed(duration)
         elif cmd == "p":
             self.motors.stop()
@@ -214,10 +282,20 @@ class Robot:
             self.speed = value
         elif cmd == "x":
             self.direction = value
-            self.motors.set(self.speed + value // 2, self.speed - value // 2)
+            self.motors.set(self.speed + value // 2, self.speed - value // 2, self.ramp_ms)
             self.motion_end = None
         elif cmd == "i":
             self.interval = max(100, value)
+        elif cmd == "g":
+            self.ramp_ms = max(0, min(10000, value))
+        elif cmd == "w":
+            # w<hz>,<dot ms>,<pattern>
+            unit, _, pattern = extra.partition(",")
+            try:
+                unit = int(unit)
+            except ValueError:
+                unit = 0
+            self.morse(value, unit, pattern)
         elif cmd == "n":
             self.beep(value, duration or 200)
         elif cmd == "l":
@@ -235,6 +313,10 @@ class Robot:
 
     def housekeeping(self):
         now = time.ticks_ms()
+        dt = time.ticks_diff(now, self.ramp_tick)
+        if dt >= 20:
+            self.ramp_tick = now
+            self.motors.step(dt, self.ramp_ms)
         if self.motion_end is not None and time.ticks_diff(now, self.motion_end) >= 0:
             self.motion_end = None
             self.motors.stop()

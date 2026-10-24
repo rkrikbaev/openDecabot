@@ -30,7 +30,48 @@ from urllib.parse import urlparse
 
 MAX_QUEUE = 50          # commands waiting per robot
 OFFLINE_AFTER = 3.0     # seconds without sync -> robot shown offline
-DEFAULT_SETTINGS = {"straight": 100, "turn": 100}   # D-pad power 0..100, per robot
+# Per-robot settings edited on the dashboard (value -> (min, max)).
+#   straight/turn: D-pad power in %
+#   ramp: milliseconds to accelerate from 0 to the commanded power (0 = off)
+#   morse_hz / morse_unit: speaker tone and dot length for Morse messages
+DEFAULT_SETTINGS = {"straight": 100, "turn": 100, "ramp": 2000, "morse_hz": 880, "morse_unit": 80}
+SETTING_LIMITS = {"straight": (0, 100), "turn": (0, 100), "ramp": (0, 10000),
+                  "morse_hz": (100, 4000), "morse_unit": (30, 300)}
+RAMP_RESEND_SECONDS = 1.0   # how often to push a ramp the robot does not report yet
+
+# Quick Morse phrases shown as buttons on the dashboard
+MORSE_PHRASES = ["ПРИВЕТ", "ПОКА", "КАК ДЕЛА"]
+
+MORSE = {
+    # Russian (ITU / GOST) alphabet
+    "А": ".-", "Б": "-...", "В": ".--", "Г": "--.", "Д": "-..", "Е": ".", "Ж": "...-",
+    "З": "--..", "И": "..", "Й": ".---", "К": "-.-", "Л": ".-..", "М": "--", "Н": "-.",
+    "О": "---", "П": ".--.", "Р": ".-.", "С": "...", "Т": "-", "У": "..-", "Ф": "..-.",
+    "Х": "....", "Ц": "-.-.", "Ч": "---.", "Ш": "----", "Щ": "--.-", "Ъ": "--.--",
+    "Ы": "-.--", "Ь": "-..-", "Э": "..-..", "Ю": "..--", "Я": ".-.-",
+    # Latin
+    "A": ".-", "B": "-...", "C": "-.-.", "D": "-..", "E": ".", "F": "..-.", "G": "--.",
+    "H": "....", "I": "..", "J": ".---", "K": "-.-", "L": ".-..", "M": "--", "N": "-.",
+    "O": "---", "P": ".--.", "Q": "--.-", "R": ".-.", "S": "...", "T": "-", "U": "..-",
+    "V": "...-", "W": ".--", "X": "-..-", "Y": "-.--", "Z": "--..",
+    # digits and a little punctuation
+    "1": ".----", "2": "..---", "3": "...--", "4": "....-", "5": ".....", "6": "-....",
+    "7": "--...", "8": "---..", "9": "----.", "0": "-----",
+    ".": "......", ",": ".-.-.-", "?": "..--..", "!": "--..--",
+}
+
+
+def encode_morse(text):
+    """'КАК ДЕЛА' -> '-.- .- -.-/-.. . .-.. .-'  (space between letters, / between words).
+
+    Unknown characters are dropped; Ё is read as Е.
+    """
+    words = []
+    for word in str(text).upper().replace("Ё", "Е").split():
+        letters = [MORSE[ch] for ch in word if ch in MORSE]
+        if letters:
+            words.append(" ".join(letters))
+    return "/".join(words)
 
 # Autopilot demo: (command, seconds before the next step). Drives a square.
 AUTO_PATTERN = [("f60,900", 1.3), ("d60,450", 0.9)]
@@ -61,6 +102,16 @@ def process_telemetry(robot, telemetry):
     # Example 2: autonomous driving decided by the server
     if robot.auto:
         commands += autopilot(robot)
+
+    # Keep the robot's acceleration ramp equal to the dashboard setting.
+    # Also covers a reboot: the robot comes back with its config.h default.
+    reported = telemetry.get("ramp")
+    wanted = robot.settings["ramp"]
+    now = time.monotonic()
+    if isinstance(reported, (int, float)) and int(reported) != wanted \
+            and now - robot.ramp_sent_at >= RAMP_RESEND_SECONDS:
+        robot.ramp_sent_at = now
+        commands.append(f"g{wanted}")
 
     return commands
 
@@ -93,15 +144,18 @@ class Robot:
         self.auto_next = 0.0
         self.low_battery = False
         self.settings = dict(DEFAULT_SETTINGS)
+        self.ramp_sent_at = 0.0
 
     def update_settings(self, data):
-        """Accepts {"straight": 0..100, "turn": 0..100}; unknown keys are ignored."""
-        for key in DEFAULT_SETTINGS:
+        """Accepts a subset of DEFAULT_SETTINGS keys; values are clamped to their limits."""
+        for key, (low, high) in SETTING_LIMITS.items():
             if key in data:
                 value = data[key]
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
                     raise ValueError(key)
-                self.settings[key] = max(0, min(100, int(value)))
+                self.settings[key] = max(low, min(high, int(value)))
+        if "ramp" in data:
+            self.ramp_sent_at = 0.0          # push the new ramp on the next sync
         return self.settings
 
     def enqueue(self, commands):
@@ -232,7 +286,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path, robot_id, action = self.route()
         if path == "/":
-            return self.send(200, DASHBOARD_HTML, "text/html")
+            return self.send(200, DASHBOARD_HTML.replace("__PHRASES__", json.dumps(MORSE_PHRASES)), "text/html")
+        if path == "/api/phrases":
+            return self.send(200, MORSE_PHRASES)
         if path == "/api/robots":
             return self.send(200, [r.to_dict() for r in REGISTRY.all()])
         if robot_id and not action:
@@ -276,6 +332,19 @@ class Handler(BaseHTTPRequestHandler):
             self.read_body()
             dropped = len(robot.drain())
             return self.send(200, {"dropped": dropped})
+        if action == "say":
+            try:
+                data = json.loads(self.read_body() or b"{}")
+                text = str(data.get("text", "")) if isinstance(data, dict) else ""
+            except ValueError:
+                return self.send(400, {"error": "bad json"})
+            pattern = encode_morse(text)
+            if not pattern:
+                return self.send(400, {"error": "nothing to send: no Morse-encodable characters"})
+            command = f"w{robot.settings['morse_hz']},{robot.settings['morse_unit']},{pattern}"
+            robot.enqueue([command])
+            log(f"{robot_id}: say {text!r} -> {pattern}")
+            return self.send(200, {"text": text, "pattern": pattern, "pending": len(robot.queue)})
         if action == "settings":
             try:
                 data = json.loads(self.read_body() or b"{}")
@@ -353,8 +422,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .row button{padding:8px 12px;font-size:14px}
   .small{font-size:12px;color:var(--muted);margin-top:8px;word-break:break-all;font-family:monospace}
   label{font-size:14px;display:flex;align-items:center;gap:6px;margin-top:8px}
+  .morse{border-top:1px solid var(--border);margin-top:10px;padding-top:4px}
+  .morse .phrases button{flex:1;padding:8px 6px;font-size:14px}
   .speeds{border-top:1px solid var(--border);margin-top:10px;padding-top:8px}
-  .speeds .line{display:grid;grid-template-columns:92px 1fr 44px;align-items:center;gap:8px;font-size:13px;color:var(--muted);margin:4px 0}
+  .speeds .line{display:grid;grid-template-columns:92px 1fr 52px;align-items:center;gap:8px;font-size:13px;color:var(--muted);margin:4px 0}
   .speeds input[type=range]{width:100%;accent-color:#1f5fa8}
   .speeds .val{text-align:right;font-family:monospace;color:var(--txt)}
   .speeds .upload{width:100%;margin-top:6px;padding:8px;font-size:14px}
@@ -380,6 +451,16 @@ function hold(btn, id, c){
   btn.onpointerdown = down; btn.onpointerup = up; btn.onpointerleave = up; btn.onpointercancel = up;
 }
 function row(k,v){ return `<tr><td>${k}</td><td>${v}</td></tr>`; }
+// Robot settings shown as sliders; stored on the server, applied on Upload
+const SETTINGS = [
+  {key:'straight', label:'Straight speed', min:0, max:100,  step:5,   fmt:v => v + ' %'},
+  {key:'turn',     label:'Turn speed',     min:0, max:100,  step:5,   fmt:v => v + ' %'},
+  {key:'ramp',     label:'Acceleration',   min:0, max:5000, step:100, fmt:v => v == 0 ? 'off' : (v/1000).toFixed(1) + ' s'},
+  {key:'morse_hz',   label:'Morse tone',   min:200, max:2000, step:20, fmt:v => v + ' Hz'},
+  {key:'morse_unit', label:'Morse dot',    min:30,  max:300,  step:10, fmt:v => v + ' ms'},
+];
+const PHRASES = __PHRASES__;
+const fmtOf = Object.fromEntries(SETTINGS.map(s => [s.key, s.fmt]));
 function render(robots){
   const root = document.getElementById('cards');
   if(!robots.length){ return; }
@@ -399,10 +480,14 @@ function render(robots){
         </div>
         <div class="row"><input placeholder="raw command, e.g. f60,800 or mHELLO"><button class="send">Send</button></div>
         <div class="row"><button class="beep">Beep</button><button class="hello">Say hi</button><button class="eyes">Eyes</button><button class="clear">Clear queue</button></div>
+        <div class="morse">
+          <div class="row phrases">${PHRASES.map(p => `<button data-say="${p}">${p}</button>`).join('')}</div>
+          <div class="row"><input class="say-text" placeholder="any text in Morse (RU / EN)"><button class="say">Say</button></div>
+          <div class="small pattern"></div>
+        </div>
         <label><input type="checkbox" class="auto"> Autopilot (server drives a square)</label>
         <div class="speeds">
-          <div class="line"><span>Straight speed</span><input type="range" class="straight" min="0" max="100" step="5"><span class="val straight-val"></span></div>
-          <div class="line"><span>Turn speed</span><input type="range" class="turn" min="0" max="100" step="5"><span class="val turn-val"></span></div>
+          ${SETTINGS.map(s => `<div class="line"><span>${s.label}</span><input type="range" class="${s.key}" min="${s.min}" max="${s.max}" step="${s.step}"><span class="val ${s.key}-val"></span></div>`).join('')}
           <button class="upload" disabled>Upload</button>
         </div>
         <div class="small sent"></div>`;
@@ -413,20 +498,20 @@ function render(robots){
       hold(card.querySelector('.t'), r.id, () => 't'+card.settings.straight);
       hold(card.querySelector('.e'), r.id, () => 'e'+card.settings.turn);
       hold(card.querySelector('.d'), r.id, () => 'd'+card.settings.turn);
-      const sliders = {straight: card.querySelector('.straight'), turn: card.querySelector('.turn')};
+      const sliders = Object.fromEntries(SETTINGS.map(s => [s.key, card.querySelector('.' + s.key)]));
       const upload = card.querySelector('.upload');
       const showSliders = () => {
-        for(const k in sliders){ sliders[k].value = card.settings[k]; card.querySelector('.'+k+'-val').textContent = card.settings[k]; }
+        for(const k in sliders){ sliders[k].value = card.settings[k]; card.querySelector('.'+k+'-val').textContent = fmtOf[k](card.settings[k]); }
         upload.disabled = true; upload.classList.remove('dirty'); upload.textContent = 'Upload';
       };
       const onSlide = () => {
-        for(const k in sliders) card.querySelector('.'+k+'-val').textContent = sliders[k].value;
+        for(const k in sliders) card.querySelector('.'+k+'-val').textContent = fmtOf[k](+sliders[k].value);
         const dirty = Object.keys(sliders).some(k => +sliders[k].value !== card.settings[k]);
         upload.disabled = !dirty; upload.classList.toggle('dirty', dirty); upload.textContent = 'Upload';
       };
       for(const k in sliders) sliders[k].oninput = onSlide;
       upload.onclick = async () => {
-        const body = {straight: +sliders.straight.value, turn: +sliders.turn.value};
+        const body = Object.fromEntries(SETTINGS.map(s => [s.key, +sliders[s.key].value]));
         const res = await api(`/api/robots/${r.id}/settings`, body);
         if(res.settings){ card.settings = res.settings; showSliders(); upload.textContent = 'Uploaded'; }
       };
@@ -441,6 +526,15 @@ function render(robots){
       card.querySelector('.hello').onclick = () => cmd(r.id,'mHELLO');
       card.querySelector('.eyes').onclick = () => cmd(r.id,'o');
       card.querySelector('.clear').onclick = () => api(`/api/robots/${r.id}/clear`,{});
+      const say = async text => {
+        const res = await api(`/api/robots/${r.id}/say`, {text});
+        card.querySelector('.pattern').textContent = res.pattern ? `${text}: ${res.pattern}` : (res.error || '');
+      };
+      for(const b of card.querySelectorAll('[data-say]')) b.onclick = () => say(b.dataset.say);
+      const sayInput = card.querySelector('.say-text');
+      const saySend = () => { if(sayInput.value.trim()){ say(sayInput.value.trim()); sayInput.value=''; } };
+      card.querySelector('.say').onclick = saySend;
+      sayInput.onkeydown = e => { if(e.key==='Enter') saySend(); };
       card.querySelector('.auto').onchange = e => api(`/api/robots/${r.id}/auto`,{enabled:e.target.checked});
     }
     card.querySelector('.dot').className = 'dot' + (r.online ? ' on' : '');
@@ -448,7 +542,9 @@ function render(robots){
       row('status', r.online ? 'online' : `offline (${r.ageSeconds ?? '-'} s)`) +
       row('ip / rssi', `${t.ip ?? '-'} / ${t.rssi ?? '-'} dBm`) +
       row('battery', t.battery == null ? 'n/a' : t.battery + ' %') +
-      row('motors L / R', `${t.motors?.esq ?? '-'} / ${t.motors?.dir ?? '-'}`) +
+      row('motors L / R', `${t.motors?.esq ?? '-'} / ${t.motors?.dir ?? '-'}` + (t.targets && (t.targets.esq !== t.motors?.esq || t.targets.dir !== t.motors?.dir) ? ` → ${t.targets.esq} / ${t.targets.dir}` : '')) +
+      row('acceleration', t.ramp == null ? '-' : (t.ramp == 0 ? 'off' : t.ramp + ' ms')) +
+      row('speaker', t.speaking ? 'playing' : 'quiet') +
       row('uptime', t.uptime != null ? Math.round(t.uptime/1000)+' s' : '-') +
       row('syncs / errors', `${r.syncs} / ${t.errors ?? '-'}`) +
       row('interval', (t.interval ?? '-') + ' ms') +

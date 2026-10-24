@@ -46,9 +46,12 @@ side needs no extra libraries and the server can be rewritten in any language.
    contacts the server gets a card with its telemetry, a D-pad (hold to move,
    release to stop), a raw command box and an *Autopilot* switch that makes
    the server drive the robot in a square. The *Straight speed* and *Turn
-   speed* sliders set the power the D-pad uses; move them and press *Upload*
-   to apply. The values are kept on the server per robot, so every browser
-   sees the same ones.
+   speed* sliders set the power the D-pad uses, *Acceleration* how long the
+   robot takes to reach that power (a straight line from 0, 2 s by default),
+   *Morse tone* and *Morse dot* the sound of Morse messages. Move the sliders
+   and press *Upload* to apply. The values are kept on the server per robot,
+   so every browser sees the same ones. The ПРИВЕТ / ПОКА / КАК ДЕЛА buttons
+   and the text box next to them play the text in Morse on the speaker.
 
 While the robot cannot reach the server, the LED matrix alternates the Wi-Fi
 logo with the robot name; the eyes appear once the first answer arrives.
@@ -71,8 +74,11 @@ logo with the robot name; the eyes appear once the first answer arrives.
   "heap": 38120,
   "battery": 87,
   "motors": {"esq": 0, "dir": 0},
-  "moving": false,
+  "targets": {"esq": 60, "dir": 60},
+  "moving": true,
   "interval": 200,
+  "ramp": 2000,
+  "speaking": false,
   "syncs": 240,
   "errors": 2,
   "commands": 11,
@@ -89,6 +95,9 @@ logo with the robot name; the eyes appear once the first answer arrives.
 | `heap` | free RAM in bytes |
 | `battery` | 0..100 %, or `null` when `SHOW_BATTERY` is off |
 | `motors.esq`, `motors.dir` | power currently applied to left / right servo, -100..100 |
+| `targets.esq`, `targets.dir` | power the last command asked for; differs from `motors` while accelerating |
+| `ramp` | current acceleration time in ms (0 = off), see the `g` command |
+| `speaking` | `true` while a Morse message is playing |
 | `interval` | current sync interval in ms |
 | `syncs`, `errors`, `commands` | counters since boot |
 | `sensors` | free-form object: add your own readings here (`buildTelemetry()` in the sketch) |
@@ -112,6 +121,8 @@ test them in the Arduino Serial Monitor first:
 | `p` | stop |
 | `y<-100..100>` then `x<-100..100>` | joystick: `y` sets speed, `x` sets direction and applies both |
 | `i<ms>` | change the sync interval (minimum 100) |
+| `g<ms>` | smooth acceleration: the power climbs on a straight line from 0 to the commanded value in `ms` milliseconds (`g2000`); slowing down, stopping and the failsafe stay immediate; `g0` turns it off |
+| `w<hz>,<dot ms>,<pattern>` | play Morse on the speaker: `w880,80,.--. .-.` (`.` dot, `-` dash, space between letters, `/` between words; dash = 3 dots, letter gap 3, word gap 7) |
 | `n<hz>,<ms>` | play a note on the buzzer (`n494,200`) |
 | `m<text>` | scroll text on the LED matrix (`mHELLO`), then back to eyes |
 | `o` | stop scrolling, show the eyes |
@@ -143,7 +154,9 @@ duration keep running until the next movement command or `p`.
 | `POST /api/robots/<name>/commands` | `{"commands": ["f100", "p"]}` or plain text, one command per line | `{"queued": 2, "pending": 2}` |
 | `POST /api/robots/<name>/clear` | | drops the pending queue |
 | `POST /api/robots/<name>/auto` | `{"enabled": true}` | toggles the autopilot demo |
-| `POST /api/robots/<name>/settings` | `{"straight": 80, "turn": 60}` | D-pad power (0..100) for straight moves and turns; stored per robot, returned in `GET /api/robots` |
+| `POST /api/robots/<name>/settings` | `{"straight": 80, "turn": 60, "ramp": 2000, "morse_hz": 880, "morse_unit": 80}` | per-robot settings, any subset: D-pad power (0..100) for straight moves and turns, acceleration time in ms (0..10000, pushed to the robot as `g<ms>`), Morse tone (100..4000 Hz) and dot length (30..300 ms). Returned in `GET /api/robots` |
+| `POST /api/robots/<name>/say` | `{"text": "КАК ДЕЛА"}` | encodes the text in Morse (Russian and Latin letters, digits) and queues it for the speaker; answers with the pattern |
+| `GET /api/phrases` | | the quick phrases shown as buttons (`MORSE_PHRASES` in the server) |
 | `POST /api/robots/<name>/sync` | telemetry JSON (used by the robot) | commands as text |
 
 Queued commands are delivered on the robot's next sync, so with the default

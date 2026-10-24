@@ -14,6 +14,9 @@
  *   e100      turn left                  n494,200  buzzer: 494 Hz, 200 ms
  *   f100,800  forward 100% for 800 ms    mHELLO    scroll text on matrix
  *   l1 / l0   blue LED on / off          o         show eyes again
+ *   g2000     accelerate 0->100 % of the commanded power in 2000 ms (g0 = off)
+ *   w880,80,.--. .-.   Morse on the speaker: tone Hz, dot ms, pattern
+ *             (. dot, - dash, space between letters, / between words)
  *   a..c q..s servo calibration (see decabot_webControler)
  *
  * Full protocol description: /server/README.md
@@ -59,11 +62,26 @@
 #include <WEMOS_Matrix_GFX.h>   // tested on 1.4.0 from Thomas O Fredericks
 #include <ArduinoUniqueID.h>    // tested on 1.3.0 from Cassettari
 #include "config.h"
+
 #ifndef WIFI_SSID
 #error "Copy config.example.h to config.h (same folder) and fill in your Wi-Fi and server settings"
 #endif
+// defaults for settings missing from an older config.h
+#ifndef RAMP_MS
+#define RAMP_MS 2000
+#endif
+#ifndef BUZZER_PIN
+#define BUZZER_PIN D8
+#endif
+#ifndef MORSE_HZ
+#define MORSE_HZ 880
+#endif
+#ifndef MORSE_UNIT_MS
+#define MORSE_UNIT_MS 80
+#endif
+#include "ramp.h"
 
-#define buzzer D8
+#define buzzer BUZZER_PIN
 #define battery A0
 const String version = "1.1.20261024";
 const char compile_date[] = __DATE__ " " __TIME__;
@@ -78,8 +96,18 @@ Servo motorDir;
 Servo motorEsq;
 int velocidade = 0;   // joystick Y
 int direcao = 0;      // joystick X
-int potenciaEsq = 0;  // current power -100..100 sent to each motor
-int potenciaDir = 0;
+Ramp rampaEsq;        // smooth acceleration, see ramp.h
+Ramp rampaDir;
+unsigned long rampMs = RAMP_MS;   // 0 -> 100 % of the commanded power takes this long; 0 = off
+unsigned long rampTimer = 0;
+
+// Morse playback on the speaker (non-blocking)
+String morsePattern = "";
+unsigned int morseIndex = 0;
+unsigned long morseNext = 0;
+bool morseToneOn = false;
+int morseHz = MORSE_HZ;
+unsigned int morseUnit = MORSE_UNIT_MS;
 unsigned long motionEnd = 0; // when > 0, stop motors at this time (timed commands)
 // calibration (same letters as decabot_webControler)
 int motorEsqMin = 33;   // 'a'
@@ -192,6 +220,8 @@ void loop() {
   }
   checkFailsafe();
   checkMotionTimer();
+  updateRamp();
+  updateMorse();
   updateDisplay();
 }
 
@@ -250,9 +280,12 @@ String buildTelemetry() {
   json += "\"rssi\":" + String(WiFi.RSSI()) + ",";
   json += "\"heap\":" + String(ESP.getFreeHeap()) + ",";
   json += "\"battery\":" + (SHOW_BATTERY ? String(readBatteryPercent()) : String("null")) + ",";
-  json += "\"motors\":{\"esq\":" + String(potenciaEsq) + ",\"dir\":" + String(potenciaDir) + "},";
-  json += "\"moving\":" + String((potenciaEsq != 0 || potenciaDir != 0) ? "true" : "false") + ",";
+  json += "\"motors\":{\"esq\":" + String(rampaEsq.applied()) + ",\"dir\":" + String(rampaDir.applied()) + "},";
+  json += "\"targets\":{\"esq\":" + String(rampaEsq.target) + ",\"dir\":" + String(rampaDir.target) + "},";
+  json += "\"moving\":" + String(isMoving() ? "true" : "false") + ",";
   json += "\"interval\":" + String(syncInterval) + ",";
+  json += "\"ramp\":" + String(rampMs) + ",";
+  json += "\"speaking\":" + String(morsePattern.length() > 0 ? "true" : "false") + ",";
   json += "\"syncs\":" + String(syncCount) + ",";
   json += "\"errors\":" + String(syncErrors) + ",";
   json += "\"commands\":" + String(commandCount) + ",";
@@ -289,8 +322,7 @@ void executeCommandLines(const String &body) {
 
 void checkFailsafe() {
   if (FAILSAFE_MS == 0 || failsafeTriggered) return;
-  bool moving = potenciaEsq != 0 || potenciaDir != 0;
-  if (!moving || lastServerContact == 0) return;
+  if (!isMoving() || lastServerContact == 0) return;
   if (millis() - lastServerContact > FAILSAFE_MS) {
     failsafeTriggered = true;
     pare();
@@ -361,6 +393,17 @@ void maquinaDeEstados(String txtDigitado) {
       syncInterval = max(100, valor);
       Serial.println("Sync interval " + String(syncInterval) + " ms");
       break;
+    case 'g':
+      rampMs = constrain(valor, 0, 10000);
+      Serial.println("Ramp " + String(rampMs) + " ms");
+      break;
+    case 'w': {
+      // w<hz>,<dot ms>,<pattern>
+      int sep = extra.indexOf(',');
+      if (sep < 0) { Serial.println("Morse: use w<hz>,<dot ms>,<pattern>"); break; }
+      startMorse(valor, extra.substring(0, sep).toInt(), extra.substring(sep + 1));
+      break;
+    }
     case 'n':
       // n<frequency>,<duration ms>
       tone(buzzer, valor, duracao > 0 ? duracao : 200);
@@ -423,22 +466,77 @@ void pare() {
   Serial.println("Parada!");
 }
 
+// Commands set the target; the ramp brings the servo there gradually.
 void moveDir(int potencia) {
-  potencia = constrain(potencia, -100, 100);
-  potenciaDir = potencia;
+  if (rampaDir.set(potencia, rampMs)) writeServoDir(rampaDir.applied());
+}
+
+void moveEsq(int potencia) {
+  if (rampaEsq.set(potencia, rampMs)) writeServoEsq(rampaEsq.applied());
+}
+
+void updateRamp() {
+  unsigned long now = millis();
+  unsigned long dt = now - rampTimer;
+  if (dt < 20) return;
+  rampTimer = now;
+  if (rampaEsq.step(dt, rampMs)) writeServoEsq(rampaEsq.applied());
+  if (rampaDir.step(dt, rampMs)) writeServoDir(rampaDir.applied());
+}
+
+bool isMoving() {
+  return rampaEsq.moving() || rampaDir.moving();
+}
+
+void writeServoDir(int potencia) {
   int saida = potencia >= 0
       ? map(potencia, 0, 100, motorDirZero, motorDirMax)
       : map(potencia, -100, 0, motorDirMin, motorDirZero);
   motorDir.write(saida);
 }
 
-void moveEsq(int potencia) {
-  potencia = constrain(potencia, -100, 100);
-  potenciaEsq = potencia;
+void writeServoEsq(int potencia) {
   int saida = potencia >= 0
       ? map(potencia, 0, 100, motorEsqZero, motorEsqMax)
       : map(potencia, -100, 0, motorEsqMin, motorEsqZero);
   motorEsq.write(saida);
+}
+
+/* ---------------------------------------------------------------- speaker */
+
+// Timing follows the Morse standard: dot 1 unit, dash 3, gap inside a letter 1,
+// between letters 3, between words 7.
+void startMorse(int hz, int unit, const String &pattern) {
+  morseHz = hz > 0 ? hz : MORSE_HZ;
+  morseUnit = unit > 0 ? unit : MORSE_UNIT_MS;
+  morsePattern = pattern;
+  morseIndex = 0;
+  morseToneOn = false;
+  morseNext = millis();
+  Serial.println("Morse: " + pattern);
+}
+
+void updateMorse() {
+  if (morsePattern.length() == 0) return;
+  if ((long)(millis() - morseNext) < 0) return;
+  if (morseToneOn) {                       // symbol finished: 1 unit of silence
+    noTone(buzzer);
+    morseToneOn = false;
+    morseNext = millis() + morseUnit;
+    return;
+  }
+  if (morseIndex >= morsePattern.length()) {
+    morsePattern = "";
+    return;
+  }
+  char c = morsePattern.charAt(morseIndex++);
+  switch (c) {
+    case '.': tone(buzzer, morseHz); morseToneOn = true; morseNext = millis() + morseUnit; break;
+    case '-': tone(buzzer, morseHz); morseToneOn = true; morseNext = millis() + 3 * morseUnit; break;
+    case ' ': morseNext = millis() + 2 * morseUnit; break;   // 1 + 2 = 3 units between letters
+    case '/': morseNext = millis() + 6 * morseUnit; break;   // 1 + 6 = 7 units between words
+    default: break;
+  }
 }
 
 /* ---------------------------------------------------------------- battery */
