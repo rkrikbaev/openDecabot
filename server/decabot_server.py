@@ -597,7 +597,7 @@ function render(robots){
       row('syncs / errors', `${r.syncs} / ${t.errors ?? '-'}`) +
       row('interval', (t.interval ?? '-') + ' ms') +
       row('free heap', t.heap != null ? t.heap + ' B' : '-') +
-      row('last command', t.lastCommand || '-') +
+      row('last command', t.lastCommand ? (t.lastCommand.length > 28 ? t.lastCommand.slice(0,27) + '…' : t.lastCommand) : '-') +
       row('firmware', t.fw ?? '-');
     if(document.activeElement !== card.querySelector('.auto')) card.querySelector('.auto').checked = r.auto;
     // settings changed from another browser: refresh sliders unless this one has unsaved edits
