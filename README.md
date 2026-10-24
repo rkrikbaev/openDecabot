@@ -71,6 +71,12 @@ Remember that Decabot platform is based on `ESP8266` chip, in Wemos D1 Mini form
 
 Some sketches uses libraries who must be installed before. See instructions on each sketch how to proceed. 
 
+## Remote control from a server
+
+The `decabot_serverClient` sketch makes the robot join your Wi-Fi network and talk to an external server: every 200 ms it sends its telemetry (battery, motors, signal, sensors) and executes the commands the server answers with. A reference server written in Python with a web dashboard lives in the **/server** folder, and the same protocol is available for MicroPython in `microPython/esp32c3/server_client.py`.
+
+Use it to drive several robots from one page, write autonomous behaviour on the computer, log telemetry or connect the robot to other systems. Protocol, API and setup instructions: [server/README.md](server/README.md).
+
 ## 3D project source
 The 3D source project was all designed on Tinkercad (yes!), and can be forked using the link below:
 [https://www.tinkercad.com/things/cXxCpU8HWDP-opendecabot-mini-v13](https://www.tinkercad.com/things/cXxCpU8HWDP-opendecabot-mini-v13)
