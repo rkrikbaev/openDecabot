@@ -19,7 +19,8 @@
  * Full protocol description: /server/README.md
  *
  * To use:
- * - Edit config.h with your Wi-Fi network and the server address
+ * - Copy config.example.h to config.h and fill in your Wi-Fi network and
+ *   the server address (config.h is ignored by git)
  * - Start the server:  python3 server/decabot_server.py
  * - Upload this sketch. The matrix alternates the Wi-Fi logo and the robot
  *   name until the server is reached, then the eyes appear.
@@ -58,6 +59,9 @@
 #include <WEMOS_Matrix_GFX.h>   // tested on 1.4.0 from Thomas O Fredericks
 #include <ArduinoUniqueID.h>    // tested on 1.3.0 from Cassettari
 #include "config.h"
+#ifndef WIFI_SSID
+#error "Copy config.example.h to config.h (same folder) and fill in your Wi-Fi and server settings"
+#endif
 
 #define buzzer D8
 #define battery A0

@@ -31,8 +31,10 @@ side needs no extra libraries and the server can be rewritten in any language.
    Linux and macOS), for example `192.168.1.100`.
 
 2. **Configure the robot.**
-   - Arduino: open `ArduinoSketch/decabot_serverClient`, edit `config.h`
-     (`WIFI_SSID`, `WIFI_PASSWORD`, `SERVER_HOST`) and upload to the Wemos D1 Mini.
+   - Arduino: in `ArduinoSketch/decabot_serverClient` copy `config.example.h`
+     to `config.h`, fill in `WIFI_SSID`, `WIFI_PASSWORD` and `SERVER_HOST`
+     and upload to the Wemos D1 Mini. `config.h` is ignored by git, so your
+     password stays on your computer.
      Needs the same libraries as `decabot_webControler` (Adafruit GFX,
      WEMOS Matrix GFX, ArduinoUniqueID). Note the robot now *joins* your Wi-Fi
      network instead of creating its own `decabot_XXXX` access point.

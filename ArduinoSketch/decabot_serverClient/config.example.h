@@ -1,6 +1,7 @@
 /*
  * openDecabot Server Client - configuration
- * Edit this file before uploading the sketch.
+ * Copy this file to config.h and edit it before uploading the sketch.
+ * config.h is ignored by git so your Wi-Fi password stays on your computer.
  */
 #pragma once
 
