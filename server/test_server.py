@@ -133,6 +133,16 @@ class ServerTest(unittest.TestCase):
         _, body = self.sync()                            # robot without ramp support: nothing sent
         self.assertEqual(body, "")
 
+    def test_servo_calibration_is_pushed_to_the_robot(self):
+        self.call("POST", "/api/robots/AB12/settings", {"zero_l": 91, "start_r": 8, "trim": -4})
+        _, body = self.sync(ramp=2000, turn360=1500, zeroL=93, zeroR=93, startL=0, startR=0, trim=0)
+        self.assertEqual(sorted(body.split()), ["b91", "j8", "u-4"])
+        _, body = self.sync(ramp=2000, turn360=1500, zeroL=91, zeroR=93, startL=0, startR=8, trim=-4)
+        self.assertEqual(body, "")
+        status, body = self.call("POST", "/api/robots/AB12/settings", {"trim": 99, "zero_r": 10})
+        settings = json.loads(body)["settings"]
+        self.assertEqual((settings["trim"], settings["zero_r"]), (30, 60))     # clamped
+
     def test_turn_calibration_is_pushed_like_the_ramp(self):
         self.call("POST", "/api/robots/AB12/settings", {"turn_ms_360": 1800, "angle_step": 10})
         _, body = self.sync(ramp=2000, turn360=1500)
@@ -200,6 +210,21 @@ class ServerTest(unittest.TestCase):
         srv.TOKEN = "secret"
         status, _ = self.call("POST", "/api/robots/AB12/camera", announce)
         self.assertEqual(status, 401)
+
+    def test_forget_removes_the_card_until_the_next_sync(self):
+        self.sync()
+        _, body = self.call("POST", "/api/robots/AB12/forget", {})
+        self.assertTrue(json.loads(body)["forgotten"])
+        _, body = self.call("GET", "/api/robots")
+        self.assertEqual(json.loads(body), [])
+        self.sync()
+        _, body = self.call("GET", "/api/robots")
+        self.assertEqual([r["id"] for r in json.loads(body)], ["AB12"])
+        # silent robots are dropped automatically
+        srv.REGISTRY.robots["AB12"].last_seen -= srv.FORGET_AFTER + 1
+        srv.REGISTRY.robots["AB12"].first_seen -= srv.FORGET_AFTER + 1
+        _, body = self.call("GET", "/api/robots")
+        self.assertEqual(json.loads(body), [])
 
     def test_clear_drops_queue(self):
         self.call("POST", "/api/robots/AB12/commands", {"commands": ["f100", "f100"]})

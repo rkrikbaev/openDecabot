@@ -37,6 +37,9 @@ PIN_BUZZER = 3                              # speaker
 RAMP_MS = 2000                              # 0 -> commanded power in this time, 0 = off
 TURN_MS_PER_360 = 1500                      # full turn in place at TURN_POWER (command k)
 TURN_POWER = 60
+MOTOR_START_ESQ = 0                         # dead band: power % where each wheel starts (commands h / j)
+MOTOR_START_DIR = 0
+MOTOR_TRIM = 0                              # left wheel speed correction in % (command u)
 MORSE_HZ = 880
 MORSE_UNIT_MS = 80
 
@@ -75,9 +78,22 @@ class Motors:
             us = SERVO_ZERO_US + (SERVO_ZERO_US - SERVO_MIN_US) * power // 100
         servo.duty_u16(self._us_to_duty(us))
 
+    start_esq = MOTOR_START_ESQ
+    start_dir = MOTOR_START_DIR
+    trim = MOTOR_TRIM
+
+    @staticmethod
+    def _compensate(power, start):
+        """Maps power 1..100 onto start..100 so the wheel leaves its dead band at once."""
+        if power == 0:
+            return 0
+        magnitude = start + abs(power) * (100 - start) // 100
+        return magnitude if power > 0 else -magnitude
+
     def _apply(self):
-        self._write(self.esq, int(round(self.power_esq)), False)
-        self._write(self.dir, int(round(self.power_dir)), True)   # right servo is mirrored
+        esq = max(-100, min(100, int(round(self.power_esq)) * (100 + self.trim) // 100))
+        self._write(self.esq, self._compensate(esq, self.start_esq), False)
+        self._write(self.dir, self._compensate(int(round(self.power_dir)), self.start_dir), True)   # right servo is mirrored
 
     def set(self, esq, dir_, ramp_ms=0):
         """Commanded power. With ramp_ms > 0 the power climbs there gradually (see ramp.h)."""
@@ -217,6 +233,9 @@ class Robot:
             "interval": self.interval,
             "ramp": self.ramp_ms,
             "turn360": self.turn_ms_360,
+            "startL": self.motors.start_esq,
+            "startR": self.motors.start_dir,
+            "trim": self.motors.trim,
             "speaking": False,
             "syncs": self.syncs,
             "errors": self.errors,
@@ -294,6 +313,21 @@ class Robot:
             self.ramp_ms = max(0, min(10000, value))
         elif cmd == "k":
             self.turn_ms_360 = max(200, min(20000, value))
+        elif cmd == "h":
+            self.motors.start_esq = max(0, min(50, value)); self.motors._apply()
+        elif cmd == "j":
+            self.motors.start_dir = max(0, min(50, value)); self.motors._apply()
+        elif cmd == "u":
+            self.motors.trim = max(-30, min(30, value)); self.motors._apply()
+        elif cmd in ("b", "r"):
+            print("Servo zero is SERVO_ZERO_US on this board")   # pulse-width based, see settings
+        elif cmd == "z":
+            try:
+                right = int(extra)
+            except ValueError:
+                right = 0
+            self.motors.set(value, right, 0)
+            self.motion_end = None
         elif cmd == "v":
             # v<degrees>,<power>: timed turn in place, no ramp
             power = max(1, min(100, duration or TURN_POWER))

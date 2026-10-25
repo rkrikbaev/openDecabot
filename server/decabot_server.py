@@ -36,16 +36,25 @@ OFFLINE_AFTER = 3.0     # seconds without sync -> robot shown offline
 #   morse_hz / morse_unit: speaker tone and dot length for Morse messages
 #   turn_ms_360: milliseconds of a full turn in place at the turn power (calibration
 #   for the +-15 degree buttons); angle_step: degrees per button press
+#   zero_l / zero_r: servo angle where each wheel stands still; start_l / start_r:
+#   power % where each wheel begins to turn (dead band); trim: left wheel speed
+#   correction in % so the robot drives straight
 DEFAULT_SETTINGS = {"straight": 100, "turn": 100, "ramp": 2000, "morse_hz": 880, "morse_unit": 80,
-                    "turn_ms_360": 1500, "angle_step": 15}
+                    "turn_ms_360": 1500, "angle_step": 15,
+                    "zero_l": 93, "zero_r": 93, "start_l": 0, "start_r": 0, "trim": 0}
 SETTING_LIMITS = {"straight": (0, 100), "turn": (0, 100), "ramp": (0, 10000),
                   "morse_hz": (100, 4000), "morse_unit": (30, 300),
-                  "turn_ms_360": (200, 20000), "angle_step": (1, 180)}
+                  "turn_ms_360": (200, 20000), "angle_step": (1, 180),
+                  "zero_l": (60, 126), "zero_r": (60, 126), "start_l": (0, 50), "start_r": (0, 50),
+                  "trim": (-30, 30)}
 # Settings the robot itself must know: (setting, telemetry field, command letter).
 # The server re-sends the command whenever the robot reports another value.
-ROBOT_SYNCED = [("ramp", "ramp", "g"), ("turn_ms_360", "turn360", "k")]
+ROBOT_SYNCED = [("ramp", "ramp", "g"), ("turn_ms_360", "turn360", "k"),
+                ("zero_l", "zeroL", "b"), ("zero_r", "zeroR", "r"),
+                ("start_l", "startL", "h"), ("start_r", "startR", "j"), ("trim", "trim", "u")]
 RESEND_SECONDS = 1.0        # how often to push a value the robot does not report yet
 CAMERA_OFFLINE_AFTER = 35.0 # seconds without an announce -> camera shown offline
+FORGET_AFTER = 600.0        # seconds offline -> robot dropped from the list (it re-registers on its next sync)
 
 # Quick Morse phrases shown as buttons on the dashboard
 MORSE_PHRASES = ["ПРИВЕТ", "ПОКА", "КАК ДЕЛА"]
@@ -251,7 +260,19 @@ class Registry:
 
     def all(self):
         with self.lock:
+            self._forget_stale()
             return list(self.robots.values())
+
+    def forget(self, robot_id):
+        with self.lock:
+            return self.robots.pop(robot_id, None) is not None
+
+    def _forget_stale(self):
+        now = time.time()
+        for robot_id, robot in list(self.robots.items()):
+            if now - max(robot.last_seen, robot.first_seen) > FORGET_AFTER:
+                del self.robots[robot_id]
+                log(f"forgot robot {robot_id}: silent for {int(FORGET_AFTER)} s")
 
 
 REGISTRY = Registry()
@@ -353,6 +374,10 @@ class Handler(BaseHTTPRequestHandler):
         if action == "camera":
             return self.handle_camera(robot_id)
 
+        if action == "forget":
+            self.read_body()
+            log(f"{robot_id}: forgotten")
+            return self.send(200, {"forgotten": REGISTRY.forget(robot_id)})
         robot = REGISTRY.get(robot_id, create=True)
         if action == "commands":
             try:
@@ -489,6 +514,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .card{background:var(--card);border:2px solid var(--border);border-radius:16px;padding:14px;width:340px}
   .card h2{margin:0 0 8px;font-size:18px;display:flex;align-items:center;gap:8px}
   .dot{width:10px;height:10px;border-radius:50%;background:var(--bad);display:inline-block}
+  .card h2 .forget{margin-left:auto;background:none;color:var(--muted);font-size:18px;padding:0 6px;line-height:1}
+  .card h2 .forget:hover{color:var(--txt)}
   .dot.on{background:var(--ok)}
   table{width:100%;font-size:13px;border-collapse:collapse;margin-bottom:10px}
   td{padding:2px 0;color:var(--muted)}td+td{color:var(--txt);text-align:right;font-family:monospace}
@@ -499,7 +526,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .pad .ccw{grid-column:1;grid-row:1}.pad .cw{grid-column:3;grid-row:1}
   .pad .ccw,.pad .cw{font-size:13px;line-height:1.1;background:#12305e}
   .pad .ccw b,.pad .cw b{display:block;font-size:18px}
-  .speeds .cal{width:100%;margin-top:6px;padding:7px;font-size:13px;background:#12305e}
+  .speeds .cal,.speeds .straight-test{flex:1;margin-top:6px;padding:7px;font-size:13px;background:#12305e}
+  .speeds .group{font-size:13px;color:var(--txt);margin:10px 0 2px;font-weight:bold}
+  .speeds .help{font-size:11px;color:var(--muted);font-weight:normal;line-height:1.3;margin-top:2px}
+  .speeds .test-l,.speeds .test-r{accent-color:#8e2a2a}
   .pad .d{grid-column:3;grid-row:2}.pad .t{grid-column:2;grid-row:3}
   .row{display:flex;gap:6px;margin-top:6px}
   .row input{flex:1;padding:8px;border-radius:8px;border:1px solid var(--border);background:#0d1630;color:var(--txt);font-family:monospace}
@@ -541,16 +571,25 @@ function hold(btn, id, c){
 function row(k,v){ return `<tr><td>${k}</td><td>${v}</td></tr>`; }
 // Robot settings shown as sliders; stored on the server, applied on Upload
 const SETTINGS = [
+  {group:'Driving'},
   {key:'straight', label:'Straight speed', min:0, max:100,  step:5,   fmt:v => v + ' %'},
   {key:'turn',     label:'Turn speed',     min:0, max:100,  step:5,   fmt:v => v + ' %'},
   {key:'ramp',     label:'Acceleration',   min:0, max:5000, step:100, fmt:v => v == 0 ? 'off' : (v/1000).toFixed(1) + ' s'},
-  {key:'morse_hz',   label:'Morse tone',   min:200, max:2000, step:20, fmt:v => v + ' Hz'},
-  {key:'morse_unit', label:'Morse dot',    min:30,  max:300,  step:10, fmt:v => v + ' ms'},
   {key:'turn_ms_360', label:'Full turn',   min:200, max:6000, step:50, fmt:v => (v/1000).toFixed(2) + ' s'},
   {key:'angle_step',  label:'Angle step',  min:1,   max:90,   step:1,  fmt:v => v + '°'},
+  {group:'Speaker'},
+  {key:'morse_hz',   label:'Morse tone',   min:200, max:2000, step:20, fmt:v => v + ' Hz'},
+  {key:'morse_unit', label:'Morse dot',    min:30,  max:300,  step:10, fmt:v => v + ' ms'},
+  {group:'Servo calibration', help:'Lift the robot. Drag a wheel test slider until that wheel just starts turning and put the value into its Start. Zero: angle where the wheel stands still. Trim: robot pulls left → raise it.'},
+  {key:'zero_l',  label:'Left zero',   min:60, max:126, step:1, fmt:v => v + '°'},
+  {key:'zero_r',  label:'Right zero',  min:60, max:126, step:1, fmt:v => v + '°'},
+  {key:'start_l', label:'Left start',  min:0,  max:50,  step:1, fmt:v => v + ' %'},
+  {key:'start_r', label:'Right start', min:0,  max:50,  step:1, fmt:v => v + ' %'},
+  {key:'trim',    label:'Trim',        min:-30, max:30, step:1, fmt:v => (v > 0 ? '+' : '') + v + ' %'},
 ];
+const SLIDERS = SETTINGS.filter(s => s.key);
 const PHRASES = __PHRASES__;
-const fmtOf = Object.fromEntries(SETTINGS.map(s => [s.key, s.fmt]));
+const fmtOf = Object.fromEntries(SLIDERS.map(s => [s.key, s.fmt]));
 function render(robots){
   const root = document.getElementById('cards');
   if(!robots.length){ return; }
@@ -562,7 +601,7 @@ function render(robots){
     if(!card){
       card = document.createElement('div'); card.className='card'; card.id='r-'+r.id;
       card.innerHTML = `
-        <h2><span class="dot"></span>${r.id}</h2>
+        <h2><span class="dot"></span>${r.id}<button class="forget" title="Remove this card (the robot comes back on its next sync)">&times;</button></h2>
         <div class="video" hidden><img alt="camera"><div class="bar"><button class="live">Live</button><button class="snap">Snapshot</button><button class="flash">Flash</button><span class="caminfo"></span></div></div>
         <table class="tele"></table>
         <div class="pad">
@@ -580,9 +619,13 @@ function render(robots){
         </div>
         <label><input type="checkbox" class="auto"> Autopilot (server drives a square)</label>
         <div class="speeds">
-          ${SETTINGS.map(s => `<div class="line"><span>${s.label}</span><input type="range" class="${s.key}" min="${s.min}" max="${s.max}" step="${s.step}"><span class="val ${s.key}-val"></span></div>`).join('')}
+          ${SETTINGS.map(s => s.group
+              ? `<div class="group">${s.group}${s.help ? `<div class="help">${s.help}</div>` : ''}</div>`
+              : `<div class="line"><span>${s.label}</span><input type="range" class="${s.key}" min="${s.min}" max="${s.max}" step="${s.step}"><span class="val ${s.key}-val"></span></div>`).join('')}
+          <div class="line"><span>Left wheel test</span><input type="range" class="test-l" min="-100" max="100" step="1" value="0"><span class="val test-l-val">0</span></div>
+          <div class="line"><span>Right wheel test</span><input type="range" class="test-r" min="-100" max="100" step="1" value="0"><span class="val test-r-val">0</span></div>
+          <div class="row"><button class="straight-test">Test straight (2 s)</button><button class="cal">Test full turn (360°)</button></div>
           <button class="upload" disabled>Upload</button>
-          <button class="cal" title="Turns a full circle at the turn speed: adjust Full turn until it is exactly 360°">Test full turn (360°)</button>
         </div>
         <div class="small sent"></div>`;
       if(root.querySelector('.empty')) root.innerHTML='';
@@ -592,7 +635,7 @@ function render(robots){
       hold(card.querySelector('.t'), r.id, () => 't'+card.settings.straight);
       hold(card.querySelector('.e'), r.id, () => 'e'+card.settings.turn);
       hold(card.querySelector('.d'), r.id, () => 'd'+card.settings.turn);
-      const sliders = Object.fromEntries(SETTINGS.map(s => [s.key, card.querySelector('.' + s.key)]));
+      const sliders = Object.fromEntries(SLIDERS.map(s => [s.key, card.querySelector('.' + s.key)]));
       const upload = card.querySelector('.upload');
       const showSliders = () => {
         for(const k in sliders){ sliders[k].value = card.settings[k]; card.querySelector('.'+k+'-val').textContent = fmtOf[k](card.settings[k]); }
@@ -606,11 +649,28 @@ function render(robots){
       };
       for(const k in sliders) sliders[k].oninput = onSlide;
       upload.onclick = async () => {
-        const body = Object.fromEntries(SETTINGS.map(s => [s.key, +sliders[s.key].value]));
+        const body = Object.fromEntries(SLIDERS.map(s => [s.key, +sliders[s.key].value]));
         const res = await api(`/api/robots/${r.id}/settings`, body);
         if(res.settings){ card.settings = res.settings; showSliders(); upload.textContent = 'Uploaded'; }
       };
       card.querySelector('.cal').onclick = () => cmd(r.id, `v360,${card.settings.turn}`);
+      card.querySelector('.straight-test').onclick = () => cmd(r.id, `f${card.settings.straight},2000`);
+      // wheel test sliders: raw power to one wheel while dragging (z<l>,<r>), stop on release
+      const tests = {l: card.querySelector('.test-l'), r: card.querySelector('.test-r')};
+      let testTimer = null;
+      const sendTest = () => { testTimer = null; cmd(r.id, `z${tests.l.value},${tests.r.value}`); };
+      for(const k in tests){
+        tests[k].oninput = () => {
+          card.querySelector('.test-' + k + '-val').textContent = tests[k].value;
+          if(!testTimer) testTimer = setTimeout(sendTest, 150);
+        };
+        tests[k].onchange = () => {
+          if(testTimer){ clearTimeout(testTimer); testTimer = null; }
+          tests.l.value = 0; tests.r.value = 0;
+          card.querySelector('.test-l-val').textContent = '0'; card.querySelector('.test-r-val').textContent = '0';
+          cmd(r.id, 'p');
+        };
+      }
       card.showSliders = showSliders;
       showSliders();
       // camera: snapshots by default, Live switches to the MJPEG stream (one viewer at a time)
@@ -631,6 +691,7 @@ function render(robots){
       card.refreshCamera = refresh;
       setInterval(() => { if(card.camera && !card.live && document.visibilityState === 'visible') refresh(); }, 5000);
       card.querySelector('.p').onclick = () => cmd(r.id,'p');
+      card.querySelector('.forget').onclick = async () => { await api(`/api/robots/${r.id}/forget`, {}); card.remove(); };
       // turn by angle: timed from the "Full turn" calibration, executed by the robot (v<deg>,<power>)
       card.querySelector('.ccw').onclick = () => cmd(r.id, `v-${card.settings.angle_step},${card.settings.turn}`);
       card.querySelector('.cw').onclick  = () => cmd(r.id, `v${card.settings.angle_step},${card.settings.turn}`);
@@ -679,6 +740,7 @@ function render(robots){
       row('motors L / R', `${t.motors?.esq ?? '-'} / ${t.motors?.dir ?? '-'}` + (t.targets && (t.targets.esq !== t.motors?.esq || t.targets.dir !== t.motors?.dir) ? ` → ${t.targets.esq} / ${t.targets.dir}` : '')) +
       row('acceleration', t.ramp == null ? '-' : (t.ramp == 0 ? 'off' : t.ramp + ' ms')) +
       row('full turn', t.turn360 == null ? '-' : t.turn360 + ' ms') +
+      row('servo cal', t.zeroL == null ? '-' : `zero ${t.zeroL}/${t.zeroR} start ${t.startL}/${t.startR} trim ${t.trim}`) +
       row('speaker', t.speaking ? 'playing' : 'quiet') +
       row('uptime', t.uptime != null ? Math.round(t.uptime/1000)+' s' : '-') +
       row('syncs / errors', `${r.syncs} / ${t.errors ?? '-'}`) +

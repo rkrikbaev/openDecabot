@@ -54,5 +54,17 @@
 #define TURN_MS_PER_360  1500
 #define TURN_POWER       60
 
+/* Servo calibration, adjustable from the dashboard (commands b r h j u).
+ * ZERO: servo angle at which the wheel stands still (default 93, tune if a
+ *   wheel creeps at power 0). START: power % at which the wheel begins to
+ *   turn, measured with the wheel test sliders; both wheels then leave their
+ *   dead band together. TRIM: left wheel speed correction in % so the robot
+ *   drives straight (pulls left -> increase).                              */
+#define MOTOR_ESQ_ZERO   93
+#define MOTOR_DIR_ZERO   93
+#define MOTOR_ESQ_START  0
+#define MOTOR_DIR_START  0
+#define MOTOR_TRIM       0
+
 /* Set true if the robot has the battery measurement circuit on A0 */
 #define SHOW_BATTERY     false

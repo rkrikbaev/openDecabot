@@ -17,6 +17,10 @@
  *   g2000     accelerate 0->100 % of the commanded power in 2000 ms (g0 = off)
  *   v15 / v-15,60   turn right / left by degrees (optional power), no ramp
  *   k1500     calibration: milliseconds for a full 360 turn at turn power
+ *   b93 / r93 servo zero (stop) angle of the left / right servo
+ *   h6 / j8   dead band: power % at which the left / right wheel starts
+ *   u-5       trim: speed correction of the left wheel in % (robot pulls left -> raise it)
+ *   z30,-30   raw wheel power left,right (no ramp), for calibration
  *   w880,80,.--. .-.   Morse on the speaker: tone Hz, dot ms, pattern
  *             (. dot, - dash, space between letters, / between words)
  *   a..c q..s servo calibration (see decabot_webControler)
@@ -90,6 +94,21 @@
 #ifndef TURN_POWER
 #define TURN_POWER 60
 #endif
+#ifndef MOTOR_ESQ_ZERO
+#define MOTOR_ESQ_ZERO 93
+#endif
+#ifndef MOTOR_DIR_ZERO
+#define MOTOR_DIR_ZERO 93
+#endif
+#ifndef MOTOR_ESQ_START
+#define MOTOR_ESQ_START 0
+#endif
+#ifndef MOTOR_DIR_START
+#define MOTOR_DIR_START 0
+#endif
+#ifndef MOTOR_TRIM
+#define MOTOR_TRIM 0
+#endif
 #include "ramp.h"
 
 #define buzzer BUZZER_PIN
@@ -123,11 +142,16 @@ unsigned int morseUnit = MORSE_UNIT_MS;
 unsigned long motionEnd = 0; // when > 0, stop motors at this time (timed commands)
 // calibration (same letters as decabot_webControler)
 int motorEsqMin = 33;   // 'a'
-int motorEsqZero = 93;  // 'b'
+int motorEsqZero = MOTOR_ESQ_ZERO;  // 'b'
 int motorEsqMax = 153;  // 'c'
 int motorDirMin = 153;  // 'q'
-int motorDirZero = 93;  // 'r'
+int motorDirZero = MOTOR_DIR_ZERO;  // 'r'
 int motorDirMax = 33;   // 's'
+// dead band compensation: the wheel only turns above this power (%), so
+// commanded power 1..100 is mapped onto start..100 and both wheels move together
+int motorEsqStart = MOTOR_ESQ_START;  // 'h'
+int motorDirStart = MOTOR_DIR_START;  // 'j'
+int motorTrim = MOTOR_TRIM;           // 'u': left wheel speed correction in %
 
 // server link
 WiFiClient wifiClient;
@@ -302,6 +326,9 @@ String buildTelemetry() {
   json += "\"interval\":" + String(syncInterval) + ",";
   json += "\"ramp\":" + String(rampMs) + ",";
   json += "\"turn360\":" + String(turnMs360) + ",";
+  json += "\"zeroL\":" + String(motorEsqZero) + ",\"zeroR\":" + String(motorDirZero) + ",";
+  json += "\"startL\":" + String(motorEsqStart) + ",\"startR\":" + String(motorDirStart) + ",";
+  json += "\"trim\":" + String(motorTrim) + ",";
   json += "\"speaking\":" + String(morsePattern.length() > 0 ? "true" : "false") + ",";
   json += "\"matrix\":" + String(HAS_MATRIX ? "true" : "false") + ",";
   json += "\"syncs\":" + String(syncCount) + ",";
@@ -388,10 +415,24 @@ void maquinaDeEstados(String txtDigitado) {
 
   switch (comando) {
     case 'a': motorEsqMin = valor; break;
-    case 'b': motorEsqZero = valor; break;
+    case 'b': motorEsqZero = constrain(valor, 60, 126); refreshServos(); break;
     case 'c': motorEsqMax = valor; break;
     case 'q': motorDirMin = valor; break;
-    case 'r': motorDirZero = valor; break;
+    case 'r': motorDirZero = constrain(valor, 60, 126); refreshServos(); break;
+    case 'h': motorEsqStart = constrain(valor, 0, 50); refreshServos(); break;
+    case 'j': motorDirStart = constrain(valor, 0, 50); refreshServos(); break;
+    case 'u': motorTrim = constrain(valor, -30, 30); refreshServos(); break;
+    case 'z': {
+      // z<left>,<right>: raw wheel power, no ramp (extra may be negative)
+      int esq = valor, dir = extra.toInt();
+      unsigned long rampSalvo = rampMs;
+      rampMs = 0;
+      moveEsq(esq);
+      moveDir(dir);
+      rampMs = rampSalvo;
+      motionEnd = 0;
+      break;
+    }
     case 's': motorDirMax = valor; break;
     case 'y':
       velocidade = constrain(valor, -100, 100);
@@ -529,7 +570,17 @@ bool isMoving() {
   return rampaEsq.moving() || rampaDir.moving();
 }
 
+// Power 1..100 is mapped onto start..100 so the wheel leaves its dead band as
+// soon as the command (or the ramp) goes above zero.
+int compensar(int potencia, int inicio) {
+  if (potencia == 0) return 0;
+  int magnitude = abs(potencia);
+  magnitude = inicio + (long)magnitude * (100 - inicio) / 100;
+  return potencia > 0 ? magnitude : -magnitude;
+}
+
 void writeServoDir(int potencia) {
+  potencia = compensar(constrain(potencia, -100, 100), motorDirStart);
   int saida = potencia >= 0
       ? map(potencia, 0, 100, motorDirZero, motorDirMax)
       : map(potencia, -100, 0, motorDirMin, motorDirZero);
@@ -537,10 +588,18 @@ void writeServoDir(int potencia) {
 }
 
 void writeServoEsq(int potencia) {
+  potencia = constrain((long)potencia * (100 + motorTrim) / 100, -100, 100);
+  potencia = compensar(potencia, motorEsqStart);
   int saida = potencia >= 0
       ? map(potencia, 0, 100, motorEsqZero, motorEsqMax)
       : map(potencia, -100, 0, motorEsqMin, motorEsqZero);
   motorEsq.write(saida);
+}
+
+// re-apply the current power after a calibration change
+void refreshServos() {
+  writeServoEsq(rampaEsq.applied());
+  writeServoDir(rampaDir.applied());
 }
 
 /* ---------------------------------------------------------------- speaker */

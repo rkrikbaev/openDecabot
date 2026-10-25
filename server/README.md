@@ -62,6 +62,17 @@ side needs no extra libraries and the server can be rewritten in any language.
    changing either. Each press is a separate timed move; the acceleration
    ramp does not apply to it.
 
+   **Servo calibration.** Continuous-rotation servos differ: each has its own
+   stop point and its own dead band, so with the acceleration ramp one wheel
+   may start before the other and the robot may not drive straight. Lift the
+   robot and use the *Servo calibration* group: drag *Left wheel test* slowly
+   until the left wheel just starts turning, note the value and set *Left
+   start* to it; same for the right wheel. If a wheel creeps at power 0,
+   adjust its *Zero*. Then put the robot down, press *Test straight (2 s)* and
+   move *Trim* until it runs straight. Upload after each change; the values
+   are pushed to the robot and survive its reboot (put the final ones into
+   `config.h` too, so a robot works before the server is reached).
+
 While the robot cannot reach the server, the LED matrix alternates the Wi-Fi
 logo with the robot name; the eyes appear once the first answer arrives.
 
@@ -107,6 +118,7 @@ logo with the robot name; the eyes appear once the first answer arrives.
 | `targets.esq`, `targets.dir` | power the last command asked for; differs from `motors` while accelerating |
 | `ramp` | current acceleration time in ms (0 = off), see the `g` command |
 | `turn360` | current full-turn calibration in ms, see the `k` command |
+| `zeroL`, `zeroR`, `startL`, `startR`, `trim` | current servo calibration, see the `b r h j u` commands |
 | `speaking` | `true` while a Morse message is playing |
 | `interval` | current sync interval in ms |
 | `syncs`, `errors`, `commands` | counters since boot |
@@ -132,6 +144,10 @@ test them in the Arduino Serial Monitor first:
 | `y<-100..100>` then `x<-100..100>` | joystick: `y` sets speed, `x` sets direction and applies both |
 | `i<ms>` | change the sync interval (minimum 100) |
 | `v<deg>` / `v<deg>,<power>` | turn in place by an angle: `v15` right, `v-15` left, power optional (default `TURN_POWER`). The duration comes from the full-turn calibration; the ramp is skipped so short turns start at full turn power |
+| `b<angle>` / `r<angle>` | zero (stop) angle of the left / right servo, 60..126, default 93; reported as `zeroL` / `zeroR` |
+| `h<pct>` / `j<pct>` | dead band of the left / right wheel: the power % at which it starts turning (0..50). Commanded power 1..100 is mapped onto start..100 so both wheels leave their dead band together; reported as `startL` / `startR` |
+| `u<pct>` | trim: left wheel speed correction, -30..30 % (robot pulls left: raise it); reported as `trim` |
+| `z<left>,<right>` | raw wheel power without ramp (`z30,0` turns only the left wheel), used by the wheel test sliders |
 | `k<ms>` | calibration for `v`: milliseconds of a full 360° turn at the turn power (`k1500`); reported back as `turn360` |
 | `g<ms>` | smooth acceleration: the power climbs on a straight line from 0 to the commanded value in `ms` milliseconds (`g2000`); slowing down, stopping and the failsafe stay immediate; `g0` turns it off |
 | `w<hz>,<dot ms>,<pattern>` | play Morse on the speaker: `w880,80,.--. .-.` (`.` dot, `-` dash, space between letters, `/` between words; dash = 3 dots, letter gap 3, word gap 7) |
@@ -165,8 +181,9 @@ duration keep running until the next movement command or `p`.
 | `GET /api/robots/<name>` | | one robot |
 | `POST /api/robots/<name>/commands` | `{"commands": ["f100", "p"]}` or plain text, one command per line | `{"queued": 2, "pending": 2}` |
 | `POST /api/robots/<name>/clear` | | drops the pending queue |
+| `POST /api/robots/<name>/forget` | | removes the robot from the list (the × on its card); it comes back on its next sync. Robots silent for 10 minutes are removed automatically |
 | `POST /api/robots/<name>/auto` | `{"enabled": true}` | toggles the autopilot demo |
-| `POST /api/robots/<name>/settings` | `{"straight": 80, "turn": 60, "ramp": 2000, "morse_hz": 880, "morse_unit": 80, "turn_ms_360": 1500, "angle_step": 15}` | per-robot settings, any subset: D-pad power (0..100) for straight moves and turns, acceleration time in ms (0..10000, pushed to the robot as `g<ms>`), Morse tone (100..4000 Hz) and dot length (30..300 ms), full-turn time in ms (200..20000, pushed as `k<ms>`) and the angle of the turn buttons (1..180°). Returned in `GET /api/robots` |
+| `POST /api/robots/<name>/settings` | `{"straight": 80, "turn": 60, "ramp": 2000, "morse_hz": 880, "morse_unit": 80, "turn_ms_360": 1500, "angle_step": 15}` | per-robot settings, any subset: D-pad power (0..100) for straight moves and turns, acceleration time in ms (0..10000, pushed to the robot as `g<ms>`), Morse tone (100..4000 Hz) and dot length (30..300 ms), full-turn time in ms (200..20000, pushed as `k<ms>`), the angle of the turn buttons (1..180°) and the servo calibration `zero_l`, `zero_r` (60..126), `start_l`, `start_r` (0..50 %), `trim` (-30..30 %), pushed as `b r h j u`. Returned in `GET /api/robots` |
 | `POST /api/robots/<name>/say` | `{"text": "КАК ДЕЛА"}` | encodes the text in Morse (Russian and Latin letters, digits) and queues it for the speaker, scrolling the text on the LED matrix at the same time (`"show": false` to keep the matrix quiet); answers with the pattern |
 | `POST /api/robots/<name>/show` | `{"text": "Привет"}` | scrolls the text on the LED matrix. The matrix font is Latin only, so Cyrillic is transliterated (`Privet`) and other non-ASCII characters are dropped; up to 40 characters |
 | `GET /api/phrases` | | the quick phrases shown as buttons (`MORSE_PHRASES` in the server) |
