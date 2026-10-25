@@ -47,5 +47,12 @@
  * (see ArduinoSketch/decabot_camera).                                       */
 #define HAS_MATRIX       true
 
+/* Turning by angle (dashboard buttons +-15 degrees and the v<deg> command):
+ * milliseconds the robot needs for one full turn in place at TURN_POWER.
+ * Calibrate with the "360" button on the dashboard, which also changes this
+ * at runtime with the command  k<ms>.                                      */
+#define TURN_MS_PER_360  1500
+#define TURN_POWER       60
+
 /* Set true if the robot has the battery measurement circuit on A0 */
 #define SHOW_BATTERY     false

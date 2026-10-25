@@ -34,10 +34,17 @@ OFFLINE_AFTER = 3.0     # seconds without sync -> robot shown offline
 #   straight/turn: D-pad power in %
 #   ramp: milliseconds to accelerate from 0 to the commanded power (0 = off)
 #   morse_hz / morse_unit: speaker tone and dot length for Morse messages
-DEFAULT_SETTINGS = {"straight": 100, "turn": 100, "ramp": 2000, "morse_hz": 880, "morse_unit": 80}
+#   turn_ms_360: milliseconds of a full turn in place at the turn power (calibration
+#   for the +-15 degree buttons); angle_step: degrees per button press
+DEFAULT_SETTINGS = {"straight": 100, "turn": 100, "ramp": 2000, "morse_hz": 880, "morse_unit": 80,
+                    "turn_ms_360": 1500, "angle_step": 15}
 SETTING_LIMITS = {"straight": (0, 100), "turn": (0, 100), "ramp": (0, 10000),
-                  "morse_hz": (100, 4000), "morse_unit": (30, 300)}
-RAMP_RESEND_SECONDS = 1.0   # how often to push a ramp the robot does not report yet
+                  "morse_hz": (100, 4000), "morse_unit": (30, 300),
+                  "turn_ms_360": (200, 20000), "angle_step": (1, 180)}
+# Settings the robot itself must know: (setting, telemetry field, command letter).
+# The server re-sends the command whenever the robot reports another value.
+ROBOT_SYNCED = [("ramp", "ramp", "g"), ("turn_ms_360", "turn360", "k")]
+RESEND_SECONDS = 1.0        # how often to push a value the robot does not report yet
 CAMERA_OFFLINE_AFTER = 35.0 # seconds without an announce -> camera shown offline
 
 # Quick Morse phrases shown as buttons on the dashboard
@@ -127,15 +134,16 @@ def process_telemetry(robot, telemetry):
     if robot.auto:
         commands += autopilot(robot)
 
-    # Keep the robot's acceleration ramp equal to the dashboard setting.
-    # Also covers a reboot: the robot comes back with its config.h default.
-    reported = telemetry.get("ramp")
-    wanted = robot.settings["ramp"]
+    # Keep the robot-side settings (ramp, turn calibration) equal to the dashboard.
+    # Also covers a reboot: the robot comes back with its config.h defaults.
     now = time.monotonic()
-    if isinstance(reported, (int, float)) and int(reported) != wanted \
-            and now - robot.ramp_sent_at >= RAMP_RESEND_SECONDS:
-        robot.ramp_sent_at = now
-        commands.append(f"g{wanted}")
+    for setting, field, letter in ROBOT_SYNCED:
+        reported = telemetry.get(field)
+        wanted = robot.settings[setting]
+        if isinstance(reported, (int, float)) and int(reported) != wanted \
+                and now - robot.sent_at.get(setting, 0.0) >= RESEND_SECONDS:
+            robot.sent_at[setting] = now
+            commands.append(f"{letter}{wanted}")
 
     return commands
 
@@ -168,7 +176,7 @@ class Robot:
         self.auto_next = 0.0
         self.low_battery = False
         self.settings = dict(DEFAULT_SETTINGS)
-        self.ramp_sent_at = 0.0
+        self.sent_at = {}           # setting -> when it was last pushed to the robot
         self.camera = None          # last announce from the ESP32-CAM, see /camera
         self.camera_seen = 0.0
 
@@ -180,8 +188,9 @@ class Robot:
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
                     raise ValueError(key)
                 self.settings[key] = max(low, min(high, int(value)))
-        if "ramp" in data:
-            self.ramp_sent_at = 0.0          # push the new ramp on the next sync
+        for setting, _, _ in ROBOT_SYNCED:
+            if setting in data:
+                self.sent_at[setting] = 0.0  # push the new value on the next sync
         return self.settings
 
     def enqueue(self, commands):
@@ -487,6 +496,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   button{background:var(--border);color:var(--txt);border:0;border-radius:12px;font-size:20px;cursor:pointer;-webkit-tap-highlight-color:transparent}
   button:active{background:#1f5fa8}
   .pad .f{grid-column:2;grid-row:1}.pad .e{grid-column:1;grid-row:2}.pad .p{grid-column:2;grid-row:2;background:#8e2a2a}
+  .pad .ccw{grid-column:1;grid-row:1}.pad .cw{grid-column:3;grid-row:1}
+  .pad .ccw,.pad .cw{font-size:13px;line-height:1.1;background:#12305e}
+  .pad .ccw b,.pad .cw b{display:block;font-size:18px}
+  .speeds .cal{width:100%;margin-top:6px;padding:7px;font-size:13px;background:#12305e}
   .pad .d{grid-column:3;grid-row:2}.pad .t{grid-column:2;grid-row:3}
   .row{display:flex;gap:6px;margin-top:6px}
   .row input{flex:1;padding:8px;border-radius:8px;border:1px solid var(--border);background:#0d1630;color:var(--txt);font-family:monospace}
@@ -533,6 +546,8 @@ const SETTINGS = [
   {key:'ramp',     label:'Acceleration',   min:0, max:5000, step:100, fmt:v => v == 0 ? 'off' : (v/1000).toFixed(1) + ' s'},
   {key:'morse_hz',   label:'Morse tone',   min:200, max:2000, step:20, fmt:v => v + ' Hz'},
   {key:'morse_unit', label:'Morse dot',    min:30,  max:300,  step:10, fmt:v => v + ' ms'},
+  {key:'turn_ms_360', label:'Full turn',   min:200, max:6000, step:50, fmt:v => (v/1000).toFixed(2) + ' s'},
+  {key:'angle_step',  label:'Angle step',  min:1,   max:90,   step:1,  fmt:v => v + '°'},
 ];
 const PHRASES = __PHRASES__;
 const fmtOf = Object.fromEntries(SETTINGS.map(s => [s.key, s.fmt]));
@@ -551,6 +566,7 @@ function render(robots){
         <div class="video" hidden><img alt="camera"><div class="bar"><button class="live">Live</button><button class="snap">Snapshot</button><button class="flash">Flash</button><span class="caminfo"></span></div></div>
         <table class="tele"></table>
         <div class="pad">
+          <button class="ccw"><b>&#8634;</b><span class="deg"></span></button><button class="cw"><b>&#8635;</b><span class="deg"></span></button>
           <button class="f">&#9650;</button><button class="e">&#9664;</button><button class="p">&#9632;</button>
           <button class="d">&#9654;</button><button class="t">&#9660;</button>
         </div>
@@ -566,6 +582,7 @@ function render(robots){
         <div class="speeds">
           ${SETTINGS.map(s => `<div class="line"><span>${s.label}</span><input type="range" class="${s.key}" min="${s.min}" max="${s.max}" step="${s.step}"><span class="val ${s.key}-val"></span></div>`).join('')}
           <button class="upload" disabled>Upload</button>
+          <button class="cal" title="Turns a full circle at the turn speed: adjust Full turn until it is exactly 360°">Test full turn (360°)</button>
         </div>
         <div class="small sent"></div>`;
       if(root.querySelector('.empty')) root.innerHTML='';
@@ -580,6 +597,7 @@ function render(robots){
       const showSliders = () => {
         for(const k in sliders){ sliders[k].value = card.settings[k]; card.querySelector('.'+k+'-val').textContent = fmtOf[k](card.settings[k]); }
         upload.disabled = true; upload.classList.remove('dirty'); upload.textContent = 'Upload';
+        for(const el of card.querySelectorAll('.deg')) el.textContent = card.settings.angle_step + '°';
       };
       const onSlide = () => {
         for(const k in sliders) card.querySelector('.'+k+'-val').textContent = fmtOf[k](+sliders[k].value);
@@ -592,6 +610,7 @@ function render(robots){
         const res = await api(`/api/robots/${r.id}/settings`, body);
         if(res.settings){ card.settings = res.settings; showSliders(); upload.textContent = 'Uploaded'; }
       };
+      card.querySelector('.cal').onclick = () => cmd(r.id, `v360,${card.settings.turn}`);
       card.showSliders = showSliders;
       showSliders();
       // camera: snapshots by default, Live switches to the MJPEG stream (one viewer at a time)
@@ -612,6 +631,9 @@ function render(robots){
       card.refreshCamera = refresh;
       setInterval(() => { if(card.camera && !card.live && document.visibilityState === 'visible') refresh(); }, 5000);
       card.querySelector('.p').onclick = () => cmd(r.id,'p');
+      // turn by angle: timed from the "Full turn" calibration, executed by the robot (v<deg>,<power>)
+      card.querySelector('.ccw').onclick = () => cmd(r.id, `v-${card.settings.angle_step},${card.settings.turn}`);
+      card.querySelector('.cw').onclick  = () => cmd(r.id, `v${card.settings.angle_step},${card.settings.turn}`);
       const input = card.querySelector('input[placeholder]');
       const send = () => { if(input.value.trim()){ cmd(r.id, input.value.trim()); input.value=''; } };
       card.querySelector('.send').onclick = send;
@@ -656,6 +678,7 @@ function render(robots){
       row('battery', t.battery == null ? 'n/a' : t.battery + ' %') +
       row('motors L / R', `${t.motors?.esq ?? '-'} / ${t.motors?.dir ?? '-'}` + (t.targets && (t.targets.esq !== t.motors?.esq || t.targets.dir !== t.motors?.dir) ? ` → ${t.targets.esq} / ${t.targets.dir}` : '')) +
       row('acceleration', t.ramp == null ? '-' : (t.ramp == 0 ? 'off' : t.ramp + ' ms')) +
+      row('full turn', t.turn360 == null ? '-' : t.turn360 + ' ms') +
       row('speaker', t.speaking ? 'playing' : 'quiet') +
       row('uptime', t.uptime != null ? Math.round(t.uptime/1000)+' s' : '-') +
       row('syncs / errors', `${r.syncs} / ${t.errors ?? '-'}`) +

@@ -54,6 +54,14 @@ side needs no extra libraries and the server can be rewritten in any language.
    and the text box next to them play the text in Morse on the speaker while
    it scrolls across the LED matrix; the *Show* box sends text to the matrix only.
 
+   The two round-arrow buttons in the top corners of the D-pad turn the robot
+   in place by *Angle step* degrees (15° by default). There is no gyroscope,
+   so the turn is timed: press *Test full turn (360°)* and adjust the *Full
+   turn* slider until the robot ends exactly where it started, then Upload.
+   The calibration depends on the turn speed and the floor, so redo it after
+   changing either. Each press is a separate timed move; the acceleration
+   ramp does not apply to it.
+
 While the robot cannot reach the server, the LED matrix alternates the Wi-Fi
 logo with the robot name; the eyes appear once the first answer arrives.
 
@@ -98,6 +106,7 @@ logo with the robot name; the eyes appear once the first answer arrives.
 | `motors.esq`, `motors.dir` | power currently applied to left / right servo, -100..100 |
 | `targets.esq`, `targets.dir` | power the last command asked for; differs from `motors` while accelerating |
 | `ramp` | current acceleration time in ms (0 = off), see the `g` command |
+| `turn360` | current full-turn calibration in ms, see the `k` command |
 | `speaking` | `true` while a Morse message is playing |
 | `interval` | current sync interval in ms |
 | `syncs`, `errors`, `commands` | counters since boot |
@@ -122,6 +131,8 @@ test them in the Arduino Serial Monitor first:
 | `p` | stop |
 | `y<-100..100>` then `x<-100..100>` | joystick: `y` sets speed, `x` sets direction and applies both |
 | `i<ms>` | change the sync interval (minimum 100) |
+| `v<deg>` / `v<deg>,<power>` | turn in place by an angle: `v15` right, `v-15` left, power optional (default `TURN_POWER`). The duration comes from the full-turn calibration; the ramp is skipped so short turns start at full turn power |
+| `k<ms>` | calibration for `v`: milliseconds of a full 360° turn at the turn power (`k1500`); reported back as `turn360` |
 | `g<ms>` | smooth acceleration: the power climbs on a straight line from 0 to the commanded value in `ms` milliseconds (`g2000`); slowing down, stopping and the failsafe stay immediate; `g0` turns it off |
 | `w<hz>,<dot ms>,<pattern>` | play Morse on the speaker: `w880,80,.--. .-.` (`.` dot, `-` dash, space between letters, `/` between words; dash = 3 dots, letter gap 3, word gap 7) |
 | `n<hz>,<ms>` | play a note on the buzzer (`n494,200`) |
@@ -155,7 +166,7 @@ duration keep running until the next movement command or `p`.
 | `POST /api/robots/<name>/commands` | `{"commands": ["f100", "p"]}` or plain text, one command per line | `{"queued": 2, "pending": 2}` |
 | `POST /api/robots/<name>/clear` | | drops the pending queue |
 | `POST /api/robots/<name>/auto` | `{"enabled": true}` | toggles the autopilot demo |
-| `POST /api/robots/<name>/settings` | `{"straight": 80, "turn": 60, "ramp": 2000, "morse_hz": 880, "morse_unit": 80}` | per-robot settings, any subset: D-pad power (0..100) for straight moves and turns, acceleration time in ms (0..10000, pushed to the robot as `g<ms>`), Morse tone (100..4000 Hz) and dot length (30..300 ms). Returned in `GET /api/robots` |
+| `POST /api/robots/<name>/settings` | `{"straight": 80, "turn": 60, "ramp": 2000, "morse_hz": 880, "morse_unit": 80, "turn_ms_360": 1500, "angle_step": 15}` | per-robot settings, any subset: D-pad power (0..100) for straight moves and turns, acceleration time in ms (0..10000, pushed to the robot as `g<ms>`), Morse tone (100..4000 Hz) and dot length (30..300 ms), full-turn time in ms (200..20000, pushed as `k<ms>`) and the angle of the turn buttons (1..180°). Returned in `GET /api/robots` |
 | `POST /api/robots/<name>/say` | `{"text": "КАК ДЕЛА"}` | encodes the text in Morse (Russian and Latin letters, digits) and queues it for the speaker, scrolling the text on the LED matrix at the same time (`"show": false` to keep the matrix quiet); answers with the pattern |
 | `POST /api/robots/<name>/show` | `{"text": "Привет"}` | scrolls the text on the LED matrix. The matrix font is Latin only, so Cyrillic is transliterated (`Privet`) and other non-ASCII characters are dropped; up to 40 characters |
 | `GET /api/phrases` | | the quick phrases shown as buttons (`MORSE_PHRASES` in the server) |

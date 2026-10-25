@@ -15,6 +15,8 @@
  *   f100,800  forward 100% for 800 ms    mHELLO    scroll text on matrix
  *   l1 / l0   blue LED on / off          o         show eyes again
  *   g2000     accelerate 0->100 % of the commanded power in 2000 ms (g0 = off)
+ *   v15 / v-15,60   turn right / left by degrees (optional power), no ramp
+ *   k1500     calibration: milliseconds for a full 360 turn at turn power
  *   w880,80,.--. .-.   Morse on the speaker: tone Hz, dot ms, pattern
  *             (. dot, - dash, space between letters, / between words)
  *   a..c q..s servo calibration (see decabot_webControler)
@@ -82,6 +84,12 @@
 #ifndef HAS_MATRIX
 #define HAS_MATRIX true
 #endif
+#ifndef TURN_MS_PER_360
+#define TURN_MS_PER_360 1500
+#endif
+#ifndef TURN_POWER
+#define TURN_POWER 60
+#endif
 #include "ramp.h"
 
 #define buzzer BUZZER_PIN
@@ -103,6 +111,7 @@ Ramp rampaEsq;        // smooth acceleration, see ramp.h
 Ramp rampaDir;
 unsigned long rampMs = RAMP_MS;   // 0 -> 100 % of the commanded power takes this long; 0 = off
 unsigned long rampTimer = 0;
+unsigned long turnMs360 = TURN_MS_PER_360;   // time of a full turn in place at TURN_POWER, see 'k'
 
 // Morse playback on the speaker (non-blocking)
 String morsePattern = "";
@@ -292,6 +301,7 @@ String buildTelemetry() {
   json += "\"moving\":" + String(isMoving() ? "true" : "false") + ",";
   json += "\"interval\":" + String(syncInterval) + ",";
   json += "\"ramp\":" + String(rampMs) + ",";
+  json += "\"turn360\":" + String(turnMs360) + ",";
   json += "\"speaking\":" + String(morsePattern.length() > 0 ? "true" : "false") + ",";
   json += "\"matrix\":" + String(HAS_MATRIX ? "true" : "false") + ",";
   json += "\"syncs\":" + String(syncCount) + ",";
@@ -405,6 +415,14 @@ void maquinaDeEstados(String txtDigitado) {
       rampMs = constrain(valor, 0, 10000);
       Serial.println("Ramp " + String(rampMs) + " ms");
       break;
+    case 'k':
+      turnMs360 = constrain(valor, 200, 20000);
+      Serial.println("Full turn " + String(turnMs360) + " ms");
+      break;
+    case 'v':
+      // v<degrees>,<power>: + right, - left; power optional
+      virarGraus(valor, duracao > 0 ? (int)duracao : TURN_POWER);
+      break;
     case 'w': {
       // w<hz>,<dot ms>,<pattern>
       int sep = extra.indexOf(',');
@@ -439,6 +457,21 @@ void maquinaDeEstados(String txtDigitado) {
 
 void startMotionTimer(unsigned long duracao) {
   motionEnd = duracao > 0 ? millis() + duracao : 0;
+}
+
+// Turn in place by an angle, timed from the full-turn calibration. The ramp
+// is skipped: a 15 degree turn lasts a fraction of a second, so the wheels
+// must be at full turn power at once.
+void virarGraus(int graus, int potencia) {
+  unsigned long ms = (unsigned long)abs(graus) * turnMs360 / 360;
+  if (graus == 0 || ms == 0) { pare(); return; }
+  potencia = constrain(potencia, 1, 100);
+  unsigned long rampSalvo = rampMs;
+  rampMs = 0;
+  if (graus > 0) direita(potencia); else esquerda(potencia);
+  rampMs = rampSalvo;
+  startMotionTimer(ms);
+  Serial.println("Virando " + String(graus) + " graus em " + String(ms) + " ms");
 }
 
 /* ----------------------------------------------------------------- motors */

@@ -133,6 +133,16 @@ class ServerTest(unittest.TestCase):
         _, body = self.sync()                            # robot without ramp support: nothing sent
         self.assertEqual(body, "")
 
+    def test_turn_calibration_is_pushed_like_the_ramp(self):
+        self.call("POST", "/api/robots/AB12/settings", {"turn_ms_360": 1800, "angle_step": 10})
+        _, body = self.sync(ramp=2000, turn360=1500)
+        self.assertEqual(body, "k1800\n")
+        _, body = self.sync(ramp=2000, turn360=1800)
+        self.assertEqual(body, "")
+        _, body = self.call("GET", "/api/robots/AB12")
+        settings = json.loads(body)["settings"]
+        self.assertEqual((settings["turn_ms_360"], settings["angle_step"]), (1800, 10))
+
     def test_morse_encoding(self):
         self.assertEqual(srv.encode_morse("ПРИВЕТ"), ".--. .-. .. .-- . -")
         self.assertEqual(srv.encode_morse("ПОКА"), ".--. --- -.- .-")

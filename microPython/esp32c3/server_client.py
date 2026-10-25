@@ -35,6 +35,8 @@ PIN_SERVO_DIR = 6                           # see boot.py pinout
 PIN_SERVO_ESQ = 7
 PIN_BUZZER = 3                              # speaker
 RAMP_MS = 2000                              # 0 -> commanded power in this time, 0 = off
+TURN_MS_PER_360 = 1500                      # full turn in place at TURN_POWER (command k)
+TURN_POWER = 60
 MORSE_HZ = 880
 MORSE_UNIT_MS = 80
 
@@ -126,6 +128,7 @@ class Robot:
         self.buzzer = None
         self.interval = SYNC_INTERVAL_MS
         self.ramp_ms = RAMP_MS
+        self.turn_ms_360 = TURN_MS_PER_360
         self.ramp_tick = time.ticks_ms()
         self.motion_end = None
         self.last_contact = None
@@ -213,6 +216,7 @@ class Robot:
             "targets": {"esq": self.motors.target_esq, "dir": self.motors.target_dir},
             "interval": self.interval,
             "ramp": self.ramp_ms,
+            "turn360": self.turn_ms_360,
             "speaking": False,
             "syncs": self.syncs,
             "errors": self.errors,
@@ -288,6 +292,17 @@ class Robot:
             self.interval = max(100, value)
         elif cmd == "g":
             self.ramp_ms = max(0, min(10000, value))
+        elif cmd == "k":
+            self.turn_ms_360 = max(200, min(20000, value))
+        elif cmd == "v":
+            # v<degrees>,<power>: timed turn in place, no ramp
+            power = max(1, min(100, duration or TURN_POWER))
+            ms = abs(value) * self.turn_ms_360 // 360
+            if value == 0 or ms == 0:
+                self.motors.stop()
+            else:
+                self.motors.set(power if value > 0 else -power, -power if value > 0 else power, 0)
+                self.timed(ms)
         elif cmd == "w":
             # w<hz>,<dot ms>,<pattern>
             unit, _, pattern = extra.partition(",")
