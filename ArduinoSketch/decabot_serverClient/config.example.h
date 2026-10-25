@@ -66,5 +66,9 @@
 #define MOTOR_DIR_START  0
 #define MOTOR_TRIM       0
 
+/* Set true if the robot drives backwards on "forward": the body is mounted
+ * with the front on the other side of the servos. Turns are unaffected.   */
+#define MOTORS_REVERSED  false
+
 /* Set true if the robot has the battery measurement circuit on A0 */
 #define SHOW_BATTERY     false

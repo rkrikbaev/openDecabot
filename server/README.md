@@ -119,6 +119,7 @@ logo with the robot name; the eyes appear once the first answer arrives.
 | `ramp` | current acceleration time in ms (0 = off), see the `g` command |
 | `turn360` | current full-turn calibration in ms, see the `k` command |
 | `zeroL`, `zeroR`, `startL`, `startR`, `trim` | current servo calibration, see the `b r h j u` commands |
+| `reversed` | `true` when `MOTORS_REVERSED` is set in `config.h` (robot body mounted the other way round) |
 | `speaking` | `true` while a Morse message is playing |
 | `interval` | current sync interval in ms |
 | `syncs`, `errors`, `commands` | counters since boot |

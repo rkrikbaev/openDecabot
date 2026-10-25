@@ -109,6 +109,9 @@
 #ifndef MOTOR_TRIM
 #define MOTOR_TRIM 0
 #endif
+#ifndef MOTORS_REVERSED
+#define MOTORS_REVERSED false
+#endif
 #include "ramp.h"
 
 #define buzzer BUZZER_PIN
@@ -219,6 +222,11 @@ void setup() {
   matrix.setTextColor(LED_ON);
   motorDir.attach(D0, 500, 2400); // correct PWM range on ESP8266
   motorEsq.attach(D6, 500, 2400);
+  if (MOTORS_REVERSED) {
+    // the robot's front is on the other side: swap each servo's end points
+    int t = motorEsqMin; motorEsqMin = motorEsqMax; motorEsqMax = t;
+    t = motorDirMin; motorDirMin = motorDirMax; motorDirMax = t;
+  }
   pare();
 
   // startup animation
@@ -329,6 +337,7 @@ String buildTelemetry() {
   json += "\"zeroL\":" + String(motorEsqZero) + ",\"zeroR\":" + String(motorDirZero) + ",";
   json += "\"startL\":" + String(motorEsqStart) + ",\"startR\":" + String(motorDirStart) + ",";
   json += "\"trim\":" + String(motorTrim) + ",";
+  json += "\"reversed\":" + String(MOTORS_REVERSED ? "true" : "false") + ",";
   json += "\"speaking\":" + String(morsePattern.length() > 0 ? "true" : "false") + ",";
   json += "\"matrix\":" + String(HAS_MATRIX ? "true" : "false") + ",";
   json += "\"syncs\":" + String(syncCount) + ",";
