@@ -48,3 +48,6 @@ O editor para python Thony é Open Source e bem simples de instalar e usar. Baix
 O projeto ESP IDE também é Open Source e roda diretamente no navegador. Nele é possível conectar-se à sua microcontroladora diretamente, e usar códigos python ou editor de blocos. Acesse em https://www.espide.eu/en/ .
 ## Arquivos .py disponíveis
 As pastas aqui disponíveis já trazem um conjunto de arquivos .py que funcionam como drivers para diferentes componentes de um openDecabot. Você pode usá-los com qualquer editor, mas iremos experimentar no ESP IDE. Basta usar o editor para copiar esses aquivos para sua microcontroladora.
+
+### Comunicação com um servidor externo
+O arquivo `esp32c3/server_client.py` conecta o robô a uma rede Wi-Fi e o faz conversar com o servidor da pasta `/server`: envia telemetria em JSON e executa os comandos devolvidos (`f100`, `d60,450`, `n880,100`...). Edite as configurações no início do arquivo e rode-o, ou adicione `import server_client` ao `main.py`. Protocolo e instruções em [server/README.md](../server/README.md).

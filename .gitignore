@@ -1,0 +1,6 @@
+# Local secrets: Wi-Fi password and server address of each robot
+ArduinoSketch/decabot_serverClient/config.h
+
+__pycache__/
+.DS_Store
+ArduinoSketch/decabot_camera/config.h
